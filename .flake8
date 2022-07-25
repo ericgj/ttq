@@ -1,0 +1,11 @@
+[flake8]
+max-complexity = 20
+max-line-length = 90
+select = C,F,E111,E999
+exclude =
+    .git,
+    __pycache__,
+    *.pyc,
+    scratch,
+    .venv,
+    .venv-*

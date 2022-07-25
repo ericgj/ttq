@@ -1,0 +1,29 @@
+*.py[cod]
+__pycache__
+
+# C extensions
+*.so
+
+# Unit test / coverage reports
+.coverage
+.tox
+.pytest_cache
+.hypothesis
+.mypy_cache
+
+# virtualenv
+.venv
+.venv-*
+
+# build
+/.eggs
+/*.egg-info
+/build
+/dist
+
+# log
+*.log
+
+scratch
+!.gitkeep
+
