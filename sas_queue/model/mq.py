@@ -1,5 +1,14 @@
 from dataclasses import dataclass, asdict
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Set
+
+
+@dataclass
+class Queue:
+    name: str
+    accept: Set[str]
+
+    def accepts(self, content_type: str) -> bool:
+        return content_type in self.accept
 
 
 @dataclass

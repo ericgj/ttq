@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 from ..adapter.executor import CommandExecutor
 from ..adapter.mq import EventListener, EventPublisher
 from ..model.event import EventProtocol, EventHandlerProtocol
-from ..model.mq import MessageContext
+from ..model.mq import MessageContext, Queue
 from ..model.command import Command
 from ..model.config import Config
 from ..model.exceptions import EventNotHandled
@@ -18,6 +18,7 @@ from ..model.exceptions import EventNotHandled
 
 def run(
     config: Config,
+    queues: Iterable[Queue],
     events: Iterable[Type[EventProtocol]],
     handlers: Iterable[EventHandlerProtocol],
     stop: Event,
@@ -28,6 +29,7 @@ def run(
     publisher = EventPublisher(
         connection=config.server,
         max_workers=max(2, executor.max_workers // 4),
+        queues=queues,
     )
 
     handler = EventHandlers(
@@ -94,7 +96,7 @@ class EventHandlers:
 
     def __call__(self, context: MessageContext, event: EventProtocol):
         commands = [
-            (h, h(event)) for h in self.handlers if event.content_type in h.event_types
+            (h, h(event)) for h in self.handlers if event.__class__ in h.event_types
         ]
         if len(commands) == 0:
             raise EventNotHandled(event.content_type)
@@ -129,15 +131,6 @@ class HandledEventCallback:
         }
 
         def _callback(f: Future):
-            if self.context.reply_to is None:
-                logger.warning(
-                    f"Unable to publish response to {command.name} "
-                    f"for event handler {handler.name} "
-                    f"because no reply-to specified in source event {self.event.name}",
-                    ctx,
-                )
-                return
-
             try:
                 result = f.result()
             except Exception as e:
@@ -149,21 +142,30 @@ class HandledEventCallback:
                 return
 
             try:
-                resp = handler.response(result)
+                resp_queue, resp = handler.response(result)
             except Exception as e:
                 logger.warning(
-                    f"Error handling response to {command.name} "
+                    f"Error preparing response to {command.name} "
                     f"for event handler {handler.name}",
                     ctx,
                 )
                 logger.exception(e, ctx)
                 return
 
-            # Note: publisher does its own error logging
-            self.publisher.publish(
-                resp,
-                routing_key=self.context.reply_to,
-                correlation_id=self.context.correlation_id,
-            )
+            if self.context.reply_to is not None:
+                # Note: publisher does its own error logging
+                self.publisher.publish(
+                    resp,
+                    routing_key=self.context.reply_to,
+                    correlation_id=self.context.correlation_id,
+                )
+
+            if resp_queue is not None and not resp_queue == self.context.reply_to:
+                # Note: publisher does its own error logging
+                self.publisher.publish(
+                    resp,
+                    routing_key=resp_queue,
+                    correlation_id=self.context.correlation_id,
+                )
 
         return _callback

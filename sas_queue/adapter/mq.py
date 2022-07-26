@@ -9,9 +9,14 @@ from pika.spec import Basic, BasicProperties
 
 logger = logging.getLogger(__name__)
 
-from ..model.mq import MessageContext
+from ..model.mq import MessageContext, Queue
 from ..model.event import EventProtocol
-from ..model.exceptions import EventNotHandled
+from ..model.exceptions import (
+    EventNotHandled,
+    InvalidQueuePublish,
+    InvalidQueueEventPublish,
+    InvalidQueueEventContentPublish,
+)
 
 
 class EventListener(Thread):
@@ -109,7 +114,7 @@ class EventListener(Thread):
             return next(
                 e.decode(body, encoding=context.content_encoding)
                 for e in self.events
-                if e.content_type == context.content_type
+                if e.queue == context.queue and e.content_type == context.content_type
             )
         except StopIteration:
             raise EventNotHandled(context.content_type)
@@ -119,14 +124,16 @@ class EventPublisher:
     def __init__(
         self,
         connection: ConnectionParameters,
+        queues: Iterable[Queue],
         max_workers: Optional[int] = None,
     ):
         self.connection = connection
+        self.queues = queues
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="EventPublisher",
         )
-        self._connect_and_open_channel()
+        self._connect_and_open_channel()  # TODO is it ok to leave channel open?
 
     @property
     def max_workers(self) -> int:
@@ -140,6 +147,8 @@ class EventPublisher:
         correlation_id: Optional[str],
         **kwargs,
     ):
+        self.validate_event_queue_publish(event, routing_key)
+
         self._executor.submit(
             self._channel.basic_publish,
             exchange="",
@@ -156,6 +165,35 @@ class EventPublisher:
         self.logger.debug("Shutting down executor")
         self._executor.shutdown(wait=True)
         self.logger.info("Shut down executor.")
+
+    def validate_event_queue_publish(self, event: EventProtocol, routing_key: str):
+        try:
+            event_queue_matches, content_type_accepted, queue_content_types = next(
+                (
+                    q.name == event.queue,
+                    q.accepts(event.content_type),
+                    q.accept,
+                )
+                for q in self.queues
+                if q.name == routing_key
+            )
+        except StopIteration:
+            raise InvalidQueuePublish(event_name=event.name, queue_name=routing_key)
+
+        if not event_queue_matches:
+            raise InvalidQueueEventPublish(
+                event_name=event.name,
+                event_queue_name=event.queue,
+                queue_name=routing_key,
+            )
+
+        if not content_type_accepted:
+            raise InvalidQueueEventContentPublish(
+                event_name=event.name,
+                event_content_type=event.content_type,
+                queue_name=routing_key,
+                queue_content_types=queue_content_types,
+            )
 
     def _connect_and_open_channel(self):
         connection = BlockingConnection(self.connection)

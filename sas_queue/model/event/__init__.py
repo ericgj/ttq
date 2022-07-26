@@ -1,11 +1,11 @@
 from subprocess import CompletedProcess
-from typing import Optional, Protocol, List
+from typing import Type, Protocol, Optional, List, Tuple
 
-from ..model.command import Command
-
+from ...model.command import Command
 
 class EventProtocol(Protocol):
     name: str
+    queue: str
     content_type: str
 
     @classmethod
@@ -18,10 +18,10 @@ class EventProtocol(Protocol):
 
 class EventHandlerProtocol(Protocol):
     name: str
-    event_types: List[str]
+    event_types: List[Type[EventProtocol]]
 
     def __call__(self, event: EventProtocol) -> Command:
         ...
 
-    def response(self, result: CompletedProcess) -> EventProtocol:
+    def response(self, result: CompletedProcess) -> Tuple[Optional[str],EventProtocol]:
         ...
