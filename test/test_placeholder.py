@@ -1,3 +1,3 @@
-from sas_queue.command import listen
+from sas_queue.command import react
 
-listen
+react

@@ -1,19 +1,17 @@
-from concurrent.futures import Future
 import logging
 from time import sleep
 from threading import Event
-from typing import Type, Iterable, Callable
+from typing import Type, Iterable
 
 root_logger = logging.getLogger()
 logger = logging.getLogger(__name__)
 
-from ..adapter.executor import CommandExecutor
-from ..adapter.mq import EventListener, EventPublisher
+from ..adapter.mq.listener import Listener
+from ..adapter.mq.handler import Handler
+from ..adapter.mq.publisher import Publisher
 from ..model.event import EventProtocol, EventHandlerProtocol
-from ..model.mq import MessageContext, Queue
-from ..model.command import Command
+from ..model.mq import Queue
 from ..model.config import Config
-from ..model.exceptions import EventNotHandled
 
 
 def run(
@@ -23,25 +21,21 @@ def run(
     handlers: Iterable[EventHandlerProtocol],
     stop: Event,
 ):
-    executor = CommandExecutor(max_workers=config.max_workers)
-
-    # Note: under assumption that max 25% of jobs could complete concurrently
-    publisher = EventPublisher(
+    publisher = Publisher(
         connection=config.server,
-        max_workers=max(2, executor.max_workers // 4),
         queues=queues,
     )
 
-    handler = EventHandlers(
-        executor=executor,
-        publisher=publisher,
+    handler = Handler(
         handlers=handlers,
+        publisher=publisher,
+        max_workers=config.max_workers
     )
 
-    listener = EventListener(
+    listener = Listener(
         connection=config.server,
         queue=config.queues.subscribe,
-        max=executor.max_workers,
+        max=handler.max_workers,
         events=events,
         handle=handler,
     )
@@ -63,12 +57,7 @@ def run(
         logger.debug("Listener stopping")
         listener.join()
         logger.info("Listener stopped.")
-        logger.debug("Executor stopping")
-        executor.shutdown()
-        logger.info("Executor stopped.")
-        logger.debug("Publisher stopping")
-        publisher.shutdown()
-        logger.info("Publisher stopped.")
+        handler.shutdown()
 
 
 def main_loop(listener, stop):
@@ -82,37 +71,25 @@ def main_loop(listener, stop):
             listener.stop()
 
 
-class EventHandlers:
-    def __init__(
-        self,
-        *,
-        executor: CommandExecutor,
-        publisher: EventPublisher,
-        handlers: Iterable[EventHandlerProtocol],
-    ):
-        self.executor = executor
-        self.publisher = publisher
-        self.handlers = handlers
 
-    def __call__(self, context: MessageContext, event: EventProtocol):
-        commands = [
-            (h, h(event)) for h in self.handlers if event.__class__ in h.event_types
-        ]
-        if len(commands) == 0:
-            raise EventNotHandled(event.content_type)
-        self.executor.submit(
-            commands,
-            HandledEventCallback(
-                publisher=self.publisher, context=context, event=event
-            ),
-        )
 
+
+
+
+
+
+
+
+
+
+
+"""
 
 class HandledEventCallback:
     def __init__(
         self,
         *,
-        publisher: EventPublisher,
+        publisher: Publisher,
         context: MessageContext,
         event: EventProtocol,
     ):
@@ -169,3 +146,5 @@ class HandledEventCallback:
                 )
 
         return _callback
+
+"""

@@ -11,23 +11,21 @@ def run(cmd: Command) -> subprocess.CompletedProcess:
         f"""Running command:
   cmd   = {cmd.command}
   cwd   = {cmd.cwd}
-  shell = {cmd.shell}
-    """
+  shell = {cmd.shell}"""
     )
     ret = subprocess.run(
         cmd.command,
-        check=True,
+        check=False,
         cwd=cmd.cwd,
         shell=cmd.shell,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     logger.info(
-        f"""Ran command successfully:
+        f"""Ran command:
   cmd   = {cmd.command}
   cwd   = {cmd.cwd}
   shell = {cmd.shell}
-  rc    = {ret.returncode}
-    """
+  rc    = {ret.returncode}"""
     )
     return ret
