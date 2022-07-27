@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 from ..adapter.mq.listener import Listener
 from ..adapter.mq.handler import Handler
-from ..adapter.mq.publisher import Publisher
 from ..model.event import EventProtocol, EventHandlerProtocol
 from ..model.mq import Queue
 from ..model.config import Config
@@ -21,15 +20,11 @@ def run(
     handlers: Iterable[EventHandlerProtocol],
     stop: Event,
 ):
-    publisher = Publisher(
+    handler = Handler(
         connection=config.server,
         queues=queues,
-    )
-
-    handler = Handler(
         handlers=handlers,
-        publisher=publisher,
-        max_workers=config.max_workers
+        max_workers=config.max_workers,
     )
 
     listener = Listener(
@@ -69,18 +64,6 @@ def main_loop(listener, stop):
     finally:
         if stop.is_set():
             listener.stop()
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 """

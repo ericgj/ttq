@@ -1,8 +1,6 @@
-from contextlib import contextmanager
 import logging
 from typing import Optional, Iterable
 
-from pika.channel import Channel
 from pika import BlockingConnection, ConnectionParameters
 from pika.spec import BasicProperties
 
@@ -23,17 +21,8 @@ class Publisher:
         connection: ConnectionParameters,
         queues: Iterable[Queue],
     ):
-        self.connection = connection
         self.queues = queues
-        self._channel: Optional[Channel] = None
-
-    @contextmanager
-    def open_channel(self):
-        self._open_channel()
-        try:
-            yield
-        finally:
-            self._close_channel()
+        self._channel = BlockingConnection(connection).channel()
 
     def publish(
         self,
@@ -43,11 +32,6 @@ class Publisher:
         correlation_id: Optional[str],
         **kwargs,
     ):
-        if self._channel is None:
-            self._open_channel()
-        if self._channel is None:  # note: to make mypy happy
-            return
-
         self.validate_event_queue_publish(event, routing_key)
 
         return self._channel.basic_publish(
@@ -85,13 +69,3 @@ class Publisher:
                 queue_name=routing_key,
                 queue_content_types=queue_content_types,
             )
-
-    def _open_channel(self):
-        connection = BlockingConnection(self.connection)
-        self._channel = connection.channel()
-
-    def _close_channel(self):
-        if self._channel is None:
-            return
-        self._channel.close()
-        self._channel = None

@@ -3,11 +3,13 @@ import logging
 from subprocess import CompletedProcess
 from typing import Optional, Iterable, List, Tuple
 
+from pika import ConnectionParameters
+
 logger = logging.getLogger(__name__)
 
 from ...adapter.mq.publisher import Publisher
 from ...adapter import subprocess_
-from ...model.mq import MessageContext
+from ...model.mq import MessageContext, Queue
 from ...model.event import EventProtocol, EventHandlerProtocol
 from ...model.command import Command
 from ...model.exceptions import (
@@ -20,12 +22,14 @@ class Handler:
     def __init__(
         self,
         *,
+        connection: ConnectionParameters,
+        queues: Iterable[Queue],
         handlers: Iterable[EventHandlerProtocol],
-        publisher: Publisher,
         max_workers: Optional[int] = None,
     ):
+        self.connection = connection
+        self.queues = queues
         self.handlers = handlers
-        self.publisher = publisher
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
     @property
@@ -87,31 +91,34 @@ class Handler:
             ctx,
         )
 
-        with self.publisher.open_channel():
-            if context.reply_to is not None:
-                logger.debug(
-                    f"Publishing {resp.name} to reply_to queue {context.reply_to}", ctx
-                )
-                self.publisher.publish(
-                    resp,
-                    routing_key=context.reply_to,
-                    correlation_id=context.correlation_id,
-                )
-                logger.info(
-                    f"Published {resp.name} to reply_to queue {context.reply_to}", ctx
-                )
+        pub = self.publisher()
+        if context.reply_to is not None:
+            logger.debug(
+                f"Publishing {resp.name} to reply_to queue {context.reply_to}", ctx
+            )
+            pub.publish(
+                resp,
+                routing_key=context.reply_to,
+                correlation_id=context.correlation_id,
+            )
+            logger.info(
+                f"Published {resp.name} to reply_to queue {context.reply_to}", ctx
+            )
 
-            if resp_queue is not None and not resp_queue == context.reply_to:
-                logger.debug(f"Publishing {resp.name} to queue {resp_queue}", ctx)
-                self.publisher.publish(
-                    resp,
-                    routing_key=resp_queue,
-                    correlation_id=context.correlation_id,
-                )
-                logger.debug(f"Published {resp.name} to queue {resp_queue}", ctx)
+        if resp_queue is not None and not resp_queue == context.reply_to:
+            logger.debug(f"Publishing {resp.name} to queue {resp_queue}", ctx)
+            pub.publish(
+                resp,
+                routing_key=resp_queue,
+                correlation_id=context.correlation_id,
+            )
+            logger.debug(f"Published {resp.name} to queue {resp_queue}", ctx)
 
     def run(self, command: Command) -> CompletedProcess:
         return subprocess_.run(command)
+
+    def publisher(self) -> Publisher:
+        return Publisher(self.connection, self.queues)
 
     def shutdown(self):
         logger.debug("Shutting down executor")
