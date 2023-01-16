@@ -8,7 +8,7 @@ from pika.spec import Basic, BasicProperties
 
 logger = logging.getLogger(__name__)
 
-from ...model.mq import MessageContext
+from ...model.mq import MessageContext, Queue
 from ...model.event import EventProtocol
 from ...model.exceptions import (
     EventNotHandled,
@@ -20,7 +20,7 @@ class Listener(Thread):
         self,
         *,
         connection: ConnectionParameters,
-        queue: str,
+        queue: Queue,
         max: int = 1,
         events: Iterable[Type[EventProtocol]],
         handle: Callable[[MessageContext, EventProtocol], None],
@@ -49,7 +49,7 @@ class Listener(Thread):
     def connect_and_open_channel(self):
         connection = BlockingConnection(self.connection)
         channel = connection.channel()
-        channel.queue_declare(queue=self.queue)
+        channel.queue_declare(queue=self.queue.name)
         channel.basic_qos(prefetch_count=self.max)
         return channel
 

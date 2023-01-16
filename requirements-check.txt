@@ -1,4 +1,4 @@
 flake8
 mypy
 types-pika
--r requirements.txt
+-e .

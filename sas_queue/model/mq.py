@@ -1,17 +1,17 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Any, Optional, Dict, Set
 
 
-@dataclass
+@dataclass(eq=True, frozen=True)
 class Queue:
     name: str
-    accept: Set[str]
+    accept: Set[str] = field(default_factory=set)
 
     def accepts(self, content_type: str) -> bool:
         return content_type in self.accept
 
 
-@dataclass
+@dataclass(eq=True, frozen=True)
 class MessageContext:
     queue: str
     content_length: int

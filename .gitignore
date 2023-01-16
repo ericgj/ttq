@@ -26,4 +26,5 @@ __pycache__
 
 scratch
 !.gitkeep
+test/output
 

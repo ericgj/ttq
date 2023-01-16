@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 class Command:
     name: str
     command: List[str]
-    cwd: Optional[str]
+    cwd: Optional[str] = None
     shell: bool = False
 
     def to_dict(self) -> Dict[str, Any]:

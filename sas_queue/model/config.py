@@ -1,21 +1,16 @@
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, Optional, Set
 
 from pika import ConnectionParameters
 
-
-@dataclass
-class QueuesConfig:
-    subscribe: str
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+from .model.mq import Queue
 
 
 @dataclass
 class Config:
     server: ConnectionParameters
-    queues: QueuesConfig
+    subscribe: Queue
+    publish: Set[Queue] = field(default_factory=set)
     max_workers: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
