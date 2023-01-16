@@ -1,14 +1,19 @@
 from dataclasses import dataclass, field, asdict
-from typing import Any, Optional, Dict, Set
+from typing import Any, Optional, Dict, FrozenSet
 
 
-@dataclass(eq=True, frozen=True)
+@dataclass(frozen=True, eq=True)
 class Queue:
     name: str
-    accept: Set[str] = field(default_factory=set)
+    accept: FrozenSet[str] = field(default_factory=frozenset)
 
     def accepts(self, content_type: str) -> bool:
         return content_type in self.accept
+
+    """
+    def __eq__(self, other) -> bool:
+        return self.name == other.name and len(self.accept ^ other.accept) == 0
+    """
 
 
 @dataclass(eq=True, frozen=True)

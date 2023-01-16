@@ -12,6 +12,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(levelname)-1s | %(asctime)s | %(threadName)s | %(module)s | %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 from pika.connection import ConnectionParameters
 from pika.adapters.blocking_connection import BlockingConnection, BlockingChannel
@@ -23,8 +24,10 @@ from sas_queue.model.config import Config
 from sas_queue.model.event import EventProtocol
 from sas_queue.model.command import Command
 
-TEST_INPUT_QUEUE = Queue("test_adapter_mq", accept={"text/plain"})
-TEST_OUTPUT_QUEUE = Queue(name="test_adapter_mq-result", accept={"test/plain"})
+TEST_INPUT_QUEUE = Queue("test_adapter_mq", accept=frozenset(["text/plain"]))
+TEST_OUTPUT_QUEUE = Queue(
+    name="test_adapter_mq-result", accept=frozenset(["text/plain"])
+)
 TEST_CONFIG = Config(
     server=ConnectionParameters(host="localhost"),
     subscribe=TEST_INPUT_QUEUE,
@@ -39,39 +42,60 @@ TEST_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
 
 def setup_module(_):
+    create_test_output_dir()
+
+
+def setup_function(_):
+    purge_test_queues()
+
+
+def create_test_output_dir():
     shutil.rmtree(TEST_OUTPUT_DIR, ignore_errors=True)
     os.mkdir(TEST_OUTPUT_DIR)
 
 
+def purge_test_queues():
+    conn = BlockingConnection(TEST_CONFIG.server)
+    ch = conn.channel()
+    try:
+        ch.queue_purge(TEST_INPUT_QUEUE.name)
+        ch.queue_purge(TEST_OUTPUT_QUEUE.name)
+    except Exception:
+        pass
+
+
 def test_simple():
 
-    # run server (subject under test) in separate thread, shut down after 3 secs
+    # run server (subject under test) in separate thread, shut down after n secs
 
-    server_th = threading.Thread.new(
+    server_th = threading.Thread(
         name="test_adapter_mq_server",
         target=mq.run,
         kwargs={
             "config": TEST_CONFIG,
-            "events": [TestEvent],
-            "handlers": [TestEventHandler],
-            "stop": stop_after(3.0),
+            "events": [EventTest],
+            "handlers": [EventTestHandler("test_simple")],
+            "stop": stop_after(1.1),
         },
     )
     server_th.start()
 
-    # publish test message and expect result using simple RPC client
+    # publish test message and expect result using simple RPC client, waiting 1 sec
 
-    client = TestRpcClient(
-        publish_queue=TEST_INPUT_QUEUE, result_decoder=TestResultEvent, timeout=2
+    client = SimpleRpcClient(
+        publish_queue=TEST_INPUT_QUEUE.name,
+        result_queue=TEST_OUTPUT_QUEUE.name,
+        result_decoder=ResultEventTest,
+        timeout=1,
     )
     conn = BlockingConnection(TEST_CONFIG.server)
     result = client(conn, "Hello world!")
 
-    assert result is not None
-    assert result.returncode == 0
-
     if server_th.is_alive():
         server_th.join()
+
+    assert result is not None
+    assert result.returncode == 0
 
 
 # ------------------------------------------------------------------------------
@@ -80,7 +104,7 @@ def test_simple():
 
 
 @dataclass(frozen=True)
-class TestEvent:
+class EventTest:
     name = "test"
     queue = "test_adapter_mq"
     content_type = "text/plain"
@@ -88,7 +112,7 @@ class TestEvent:
     payload: str
 
     @classmethod
-    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "TestEvent":
+    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "EventTest":
         return cls(
             encoding=encoding,
             payload=data.decode() if encoding is None else data.decode(encoding),
@@ -101,7 +125,7 @@ class TestEvent:
 
 
 @dataclass(frozen=True)
-class TestResultEvent:
+class ResultEventTest:
     name = "test-result"
     queue = "test_adapter_mq-result"
     content_type = "text/plain"
@@ -110,7 +134,7 @@ class TestResultEvent:
     @classmethod
     def decode(
         cls, data: bytes, *, encoding: Optional[str] = None
-    ) -> "TestResultEvent":
+    ) -> "ResultEventTest":
         return cls(
             returncode=int(data.decode() if encoding is None else data.decode(encoding))
         )
@@ -120,12 +144,15 @@ class TestResultEvent:
         return rc.encode() if encoding is None else rc.encode(encoding)
 
 
-class TestEventHandler:
+class EventTestHandler:
     name = "test_handler"
-    event_types = {TestEvent}
+    event_types = {EventTest}
+
+    def __init__(self, output_file: str):
+        self.output_file = output_file
 
     def __call__(self, event: EventProtocol) -> Command:
-        if isinstance(event, TestEvent):
+        if isinstance(event, EventTest):
             b_msg = event.encode(encoding=event.encoding)
             s_msg = (
                 b_msg.decode()
@@ -138,14 +165,14 @@ class TestEventHandler:
                     "echo",
                     s_msg,
                     ">>",
-                    os.path.join(TEST_OUTPUT_DIR, "test_adapter_mq"),
+                    os.path.join(TEST_OUTPUT_DIR, self.output_file),
                 ],
                 shell=True,
             )
         raise ValueError(f"Unhandled event type: {type(event)}")
 
     def response(self, result: CompletedProcess) -> Tuple[Optional[str], EventProtocol]:
-        return (None, TestResultEvent(returncode=result.returncode))
+        return (None, ResultEventTest(returncode=result.returncode))
 
 
 # ------------------------------------------------------------------------------
@@ -157,26 +184,29 @@ def stop_after(secs: float):
     e = threading.Event()
     t = threading.Timer(secs, lambda: e.set())
     t.start()
+    return e
 
 
-class TestRpcClient:
+class SimpleRpcClient:
     def __init__(
         self,
         *,
         publish_queue: str,
+        result_queue: str,
         result_decoder: Type[EventProtocol],
         timeout: Optional[int] = None,
     ):
         self.publish_queue = publish_queue
+        self.result_queue = result_queue
+        self.result_decoder = result_decoder
         self.timeout = timeout
-        self.result_decoder = (result_decoder,)
         self.corr_id: Optional[str] = None
         self.result: Optional[EventProtocol] = None
 
     def start(self, conn: BlockingConnection) -> Tuple[BlockingChannel, Optional[str]]:
         channel = conn.channel()
 
-        result = channel.queue_declare(queue="", exclusive=True)
+        result = channel.queue_declare(queue=self.result_queue)
         callback_queue = result.method.queue
 
         channel.basic_consume(
@@ -213,7 +243,11 @@ class TestRpcClient:
         return self.result
 
     def callback(self, ch, method, props, body):
-        if self.corr_id == props.correlation_id:
-            self.result = self.result_decoder.decode(
-                body, encoding=props.content_encoding
-            )
+        try:
+            if self.corr_id == props.correlation_id:
+                self.result = self.result_decoder.decode(
+                    body, encoding=props.content_encoding
+                )
+        except Exception as e:
+            logger.error(f"NACK: {e}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)

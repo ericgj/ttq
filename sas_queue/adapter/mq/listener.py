@@ -1,10 +1,11 @@
 import logging
 from threading import Thread
-from typing import Type, Iterable, Callable
+from typing import Type, Optional, Iterable, Callable
 
-from pika.channel import Channel
-from pika import BlockingConnection, ConnectionParameters
+from pika.adapters.blocking_connection import BlockingConnection, BlockingChannel
+from pika.connection import ConnectionParameters
 from pika.spec import Basic, BasicProperties
+from pika.channel import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -31,37 +32,45 @@ class Listener(Thread):
         self.max = max
         self.events = events
         self.handle = handle
+        self.channel: Optional[BlockingChannel] = None
 
     def run(self):
         try:
-            channel = self.connect_and_open_channel()
-            channel.basic_consume(queue=self.queue, on_message_callback=self._handle)
+            self.connect_and_open_channel()
+            self.channel.basic_consume(
+                queue=self.queue.name, on_message_callback=self._handle
+            )
         except Exception as e:
             logger.exception(e)
             raise e  # fail if failed to connect/configure channel
 
         try:
-            channel.start_consuming()
+            self.channel.start_consuming()
         except Exception as e:
             logger.exception(e)
             self.run()  # keep listening after exception in handling events
+
+    def stop(self):
+        """Called from the main thread"""
+        if not self.channel is None:
+            self.channel.stop_consuming()
+        self.join()
 
     def connect_and_open_channel(self):
         connection = BlockingConnection(self.connection)
         channel = connection.channel()
         channel.queue_declare(queue=self.queue.name)
         channel.basic_qos(prefetch_count=self.max)
-        return channel
+        self.channel = channel
 
     def context(
         self,
-        channel: Channel,
         method: Basic.Deliver,
         properties: BasicProperties,
         body: bytes,
     ) -> MessageContext:
         return MessageContext(
-            queue=self.queue,
+            queue=self.queue.name,
             content_length=len(body),
             content_type=properties.content_type,
             content_encoding=properties.content_encoding,
@@ -75,7 +84,7 @@ class Listener(Thread):
         )
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
-        context = self.context(channel=ch, method=m, properties=p, body=body)
+        context = self.context(method=m, properties=p, body=body)
         ctx = context.to_dict()
         ack = True
         try:
@@ -103,7 +112,7 @@ class Listener(Thread):
                 ch.basic_ack(delivery_tag=m.delivery_tag)
             else:
                 logger.debug("NACK", ctx)
-                ch.basic_nack(delivery_tag=m.delivery_tag)
+                ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
 
     def _decode(self, context, body) -> EventProtocol:
         try:

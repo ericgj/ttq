@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Set
 
 from pika import ConnectionParameters
 
-from .model.mq import Queue
+from ..model.mq import Queue
 
 
 @dataclass
