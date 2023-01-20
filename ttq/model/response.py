@@ -1,20 +1,20 @@
 from dataclasses import dataclass, asdict
 import json
-from typing import Protocol, List, Optional, Dict, Any
+from typing import List, Protocol, Optional, Dict, Any
 
 from ..model.exceptions import NoEncodingForContentType
 
 
 class Response(Protocol):
-    @property
-    def type_name(self) -> str:
-        return self.__class__.__name__
+    type_name: str = "Response"
 
     def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
         ...
 
 
 class Accepted:
+    type_name = "Accepted"
+
     def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
         if content_type == "text/plain":
             return b""
@@ -26,6 +26,7 @@ class Accepted:
 
 @dataclass
 class Completed:
+    type_name = "Completed"
     args: List[str]
     returncode: int
     stdout: Optional[str]

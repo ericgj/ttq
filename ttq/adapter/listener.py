@@ -1,6 +1,10 @@
+from concurrent.futures import Future
+import logging
 from typing import Iterable, Type
 
-from pika.blocking_connection import BlockingChannel
+logger = logging.getLogger(__name__)
+
+from pika.adapters.blocking_connection import BlockingChannel
 from pika.channel import Channel
 from pika.spec import Basic, BasicProperties
 
@@ -16,28 +20,46 @@ class Listener:
         *,
         channel: BlockingChannel,
         queue_name: str,
+        prefetch_count: int,
         events: Iterable[Type[EventProtocol]],
         executor: Executor,
     ):
         self.channel = channel
         self.queue_name = queue_name
+        self.prefetch_count = prefetch_count
         self.events = events
         self.executor = executor
 
-    def run(self):
+        self.channel.basic_qos(prefetch_count=self.prefetch_count)
         self.channel.basic_consume(
             queue=self.queue_name, on_message_callback=self._handle
         )
-        self.channel.start_consuming()
-
-    def stop(self):
-        self.channel.stop_consuming()
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
+        def _handle_result(f: Future):
+            logger.debug(
+                f"Handling result of command {command.name} for correlation_id {context.correlation_id}"
+            )
+            try:
+                f.result()
+                logger.debug(
+                    f"Success executing command {command.name} for correlation_id {context.correlation_id}"
+                )
+                ch.basic_ack(delivery_tag=m.delivery_tag)
+            except Exception as e:
+                logger.warning(
+                    f"Error executing command {command.name} for correlation_id {context.correlation_id}"
+                )
+                logger.exception(e)
+                ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
+
+        logger.debug(f"Handling message correlation_id = {p.correlation_id}")
         context = self._context(p, body)
         event = self._decode(body, channel=ch, context=context)
         command = event.to_command()
-        self.executor.submit(command, context)  # run command in thread + subprocess
+        logger.debug(f"Submitting command {command.name}")
+        f = self.executor.submit(command, context)  # run command in thread + subprocess
+        f.add_done_callback(_handle_result)
 
     def _context(self, properties: BasicProperties, body: bytes) -> Context:
         return Context(

@@ -1,15 +1,14 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 import logging
 from subprocess import Popen, TimeoutExpired, PIPE
 from typing import Optional, List
 
-from pika.blocking_connection import BlockingChannel
+from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
 from ..model.command import Command
 from ..model.message import Context
 from ..model.response import Accepted, Completed
-from ..util.concurrent.futures import log_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +25,16 @@ class Executor:
         self.queue_name = queue_name
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
-    def submit(self, command: Command, context: Context):
-        ctx = context.to_dict()
+    @property
+    def max_workers(self) -> int:
+        return self._executor._max_workers
+
+    def submit(self, command: Command, context: Context) -> Future:
         f = self._executor.submit(self._exec, command, context)
-        f.add_done_callback(
-            log_exceptions(
-                message=f"Error executing command {command.name} for correlation_id {context.correlation_id}",
-                logger=logger,
-                context=ctx,
-            )
-        )
+        return f
+
+    def shutdown(self):
+        self._executor.shutdown()
 
     def _exec(self, command: Command, context: Context):
         with Popen(
@@ -47,16 +46,30 @@ class Executor:
             encoding=command.encoding,
             text=True,
         ) as p:
+            logger.debug(f"Starting process {command.name}, pid = {p.pid}")
             pid = p.pid
+
             self._store_process_started(pid, context)
+
+            logger.debug(f"Publishing process started to {context.reply_to}")
             self._publish_process_started(context)
+
             try:
+                logger.debug("Running process")
                 out, err = p.communicate(timeout=command.timeout)
+
             except TimeoutExpired:
+                logger.warning(
+                    f"Process timeout expired at after {command.timeout} secs, killing"
+                )
                 p.kill()
+                logger.debug("Finishing process")
                 out, err = p.communicate()
+
             finally:
                 self._store_process_completed(pid, p.returncode, context)
+
+                logger.debug(f"Publishing process completed to {context.reply_to}")
                 self._publish_process_completed(
                     args=p.args,
                     returncode=p.returncode,

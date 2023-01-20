@@ -1,21 +1,20 @@
-from typing import Protocol, Optional
+from typing import TypeVar, Type, Protocol, Optional
 
-from ...model.command import Command
+from ..model.command import Command
+
+Self = TypeVar("Self", bound="EventProtocol")
 
 
 class EventProtocol(Protocol):
-    content_type: str
+    type_name: str = ""
+    content_type: str = ""
 
     @classmethod
-    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "EventProtocol":
+    def decode(cls: Type[Self], data: bytes, *, encoding: Optional[str] = None) -> Self:
         ...
 
-    @property
-    def type_name(self) -> str:
-        return self.__class__.__name__
-
-    def encode(self, *, encoding: Optional[str] = None) -> bytes:
+    def encode(self: Self, *, encoding: Optional[str] = None) -> bytes:
         ...
 
-    def to_command(self) -> Command:
+    def to_command(self: Self) -> Command:
         ...
