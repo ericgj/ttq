@@ -25,6 +25,7 @@ from ttq.command.run import run
 from ttq.model.config import Config
 from ttq.model.command import Command
 from ttq.model.response import Accepted, Completed
+from ttq.util.mapping import compile_type_map
 
 # ------------------------------------------------------------------------------
 # TESTS
@@ -75,6 +76,12 @@ def test_simple(caplog):
     caplog.set_level(logging.DEBUG, logger="ttq")
     expected_output = "test_command_run_test_simple.txt"
 
+    app = compile_type_map(
+        {
+            EventTest: EchoCommand(TEST_OUTPUT_DIR),
+        }
+    )
+
     # run server (subject under test) in separate thread, shut down after n secs
 
     server_th = threading.Thread(
@@ -82,6 +89,7 @@ def test_simple(caplog):
         target=run,
         kwargs={
             "config": TEST_CONFIG,
+            "app": app,
             "stop": stop_after(1),
         },
     )
@@ -134,14 +142,19 @@ class EventTest:
         s = "\n".join([self.payload, self.output_file])
         return s.encode() if encoding is None else s.encode(encoding)
 
-    def to_command(self) -> Command:
+
+class EchoCommand:
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+
+    def __call__(self, event: EventTest) -> Command:
         return Command(
             name="echo",
             args=[
                 "echo",
-                self.payload,
+                event.payload,
                 ">>",
-                os.path.join(TEST_OUTPUT_DIR, self.output_file),
+                os.path.join(self.output_dir, event.output_file),
             ],
             shell=True,
         )

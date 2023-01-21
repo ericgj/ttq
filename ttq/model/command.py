@@ -1,5 +1,7 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Type, Callable
+
+from ..model.event import EventProtocol
 
 
 @dataclass
@@ -10,3 +12,6 @@ class Command:
     cwd: Optional[str] = None
     encoding: Optional[str] = None
     timeout: Optional[float] = None
+
+
+FromEvent = Callable[[Type[EventProtocol]], Command]

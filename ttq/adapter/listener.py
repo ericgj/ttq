@@ -12,6 +12,7 @@ from ..adapter.executor import Executor
 from ..model.event import EventProtocol
 from ..model.message import Context
 from ..model.exceptions import EventNotHandled
+from ..model import command
 
 
 class Listener:
@@ -22,12 +23,14 @@ class Listener:
         queue_name: str,
         prefetch_count: int,
         events: Iterable[Type[EventProtocol]],
+        app: command.FromEvent,
         executor: Executor,
     ):
         self.channel = channel
         self.queue_name = queue_name
         self.prefetch_count = prefetch_count
         self.events = events
+        self.app = app
         self.executor = executor
 
         self.channel.basic_qos(prefetch_count=self.prefetch_count)
@@ -56,7 +59,8 @@ class Listener:
         logger.debug(f"Handling message correlation_id = {p.correlation_id}")
         context = self._context(p, body)
         event = self._decode(body, channel=ch, context=context)
-        command = event.to_command()
+        logger.debug(f"Converting event {event.type_name} to command")
+        command = self.app(event)
         logger.debug(f"Submitting command {command.name}")
         f = self.executor.submit(command, context)  # run command in thread + subprocess
         f.add_done_callback(_handle_result)

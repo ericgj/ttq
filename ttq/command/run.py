@@ -4,15 +4,16 @@ from typing import Optional
 
 from pika.adapters.blocking_connection import BlockingConnection
 
-from ..model.config import Config
 from ..adapter.listener import Listener
 from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
+from ..model.config import Config
+from ..model import command
 
 logger = logging.getLogger(__name__)
 
 
-def run(config: Config, stop: Optional[Event] = None):
+def run(config: Config, app: command.FromEvent, stop: Optional[Event] = None):
 
     logger.debug("Connecting to subscriber channel")
     sub = BlockingConnection(config.connection)
@@ -41,6 +42,7 @@ def run(config: Config, stop: Optional[Event] = None):
             else config.prefetch_count
         ),
         events=config.events,
+        app=app,
         executor=executor,
     )
 

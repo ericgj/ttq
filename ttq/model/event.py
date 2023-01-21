@@ -1,7 +1,5 @@
 from typing import TypeVar, Type, Protocol, Optional
 
-from ..model.command import Command
-
 Self = TypeVar("Self", bound="EventProtocol")
 
 
@@ -14,7 +12,4 @@ class EventProtocol(Protocol):
         ...
 
     def encode(self: Self, *, encoding: Optional[str] = None) -> bytes:
-        ...
-
-    def to_command(self: Self) -> Command:
         ...
