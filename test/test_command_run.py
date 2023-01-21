@@ -253,6 +253,7 @@ TEST_RESPONSE_QUEUE = "test_command_run-response"
 TEST_CONFIG = Config(
     connection=ConnectionParameters(host="localhost"),
     subscribe=TEST_REQUEST_QUEUE,
-    publish=TEST_RESPONSE_QUEUE,
+    publish="",
     events=[EventTest],
+    storage_file=os.path.join(TEST_OUTPUT_DIR, "process_map"),
 )

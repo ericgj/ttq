@@ -6,6 +6,7 @@ from typing import Optional, List
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
+from ..adapter.store import Store, Put, Delete
 from ..model.command import Command
 from ..model.message import Context
 from ..model.response import Accepted, Completed
@@ -18,11 +19,13 @@ class Executor:
         self,
         *,
         channel: BlockingChannel,
-        queue_name: str,
+        exchange_name: str,
+        store: Store,
         max_workers: Optional[int] = None,
     ):
         self.channel = channel
-        self.queue_name = queue_name
+        self.exchange_name = exchange_name
+        self.store = store
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
     @property
@@ -46,10 +49,13 @@ class Executor:
             encoding=command.encoding,
             text=True,
         ) as p:
-            logger.debug(f"Starting process {command.name}, pid = {p.pid}")
+            logger.debug(f"Starting process {command.name}")
             pid = p.pid
 
-            self._store_process_started(pid, context)
+            logger.debug(
+                f"Storing process started for correlation_id {context.correlation_id}"
+            )
+            self.store.queue.put(Put(context.correlation_id, pid))
 
             logger.debug(f"Publishing process started to {context.reply_to}")
             self._publish_process_started(context)
@@ -67,8 +73,6 @@ class Executor:
                 out, err = p.communicate()
 
             finally:
-                self._store_process_completed(pid, p.returncode, context)
-
                 logger.debug(f"Publishing process completed to {context.reply_to}")
                 self._publish_process_completed(
                     args=p.args,
@@ -77,11 +81,15 @@ class Executor:
                     stderr=err,
                     context=context,
                 )
+                logger.debug(
+                    f"Storing process completed for correlation_id {context.correlation_id}"
+                )
+                self.store.queue.put(Delete(context.correlation_id))
 
     def _publish_process_started(self, context: Context):
         resp = Accepted()
         self.channel.basic_publish(
-            exchange="",  # TODO put in config?
+            exchange=self.exchange_name,
             routing_key=context.reply_to,
             properties=BasicProperties(
                 type=resp.type_name,
@@ -108,7 +116,7 @@ class Executor:
             stderr=stderr,
         )
         self.channel.basic_publish(
-            exchange="",  # TODO put in config?
+            exchange=self.exchange_name,
             routing_key=context.reply_to,
             properties=BasicProperties(
                 type=resp.type_name,
@@ -118,17 +126,3 @@ class Executor:
             ),
             body=resp.encode(encoding="utf8", content_type=context.content_type),
         )
-
-    def _store_process_started(self, pid: int, context: Context):
-        # TODO
-        pass
-
-    def _store_process_completed(
-        self, pid: int, returncode: Optional[int], context: Context
-    ):
-        # TODO
-        pass
-
-    def _fetch_pid_by_correlation_id(self, correlation_id: str) -> Optional[int]:
-        # TODO
-        pass

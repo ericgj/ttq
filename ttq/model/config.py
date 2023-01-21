@@ -9,9 +9,10 @@ from ..model.event import EventProtocol
 @dataclass
 class Config:
     connection: ConnectionParameters
-    subscribe: str
-    publish: str
     events: List[Type[EventProtocol]]
+    storage_file: str
+    subscribe: str
+    publish: str = ""
     prefetch_count: Optional[int] = None
     max_workers: Optional[int] = None
 

@@ -18,7 +18,10 @@ setup(
         "ttq.util.concurrent",
     ],
     # entry_points={"console_scripts": ["ttq = ttq.__main__:main"]},
-    install_requires=["pika"],
+    install_requires=[
+        "pika",
+        "lmdbm @ git+ssh://git@github.com/Dobatymo/lmdb-python-dbm@master#egg=lmdbm",
+    ],
     tests_require=tests_require,
     extras_require={"test": tests_require},  # to make pip happy
     zip_safe=False,  # to make mypy happy

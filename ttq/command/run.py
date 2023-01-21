@@ -7,6 +7,7 @@ from pika.adapters.blocking_connection import BlockingConnection
 from ..model.config import Config
 from ..adapter.listener import Listener
 from ..adapter.executor import Executor
+from ..adapter.store import Store, ProcessMap
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,14 @@ def run(config: Config, stop: Optional[Event] = None):
     pub = BlockingConnection(config.connection)
     pub_ch = pub.channel()
 
+    store = Store(config.storage_file, ProcessMap, thread_name="ProcessMap")
+    store.start()
+
     executor = Executor(
         channel=pub_ch,
-        queue_name=config.publish,
+        exchange_name=config.publish,
         max_workers=config.max_workers,
+        store=store,
     )
     _ = Listener(
         channel=sub_ch,
@@ -39,22 +44,25 @@ def run(config: Config, stop: Optional[Event] = None):
         executor=executor,
     )
 
-    try:
-        while not stop.is_set():
+    while not stop.is_set():
+        try:
             sub.sleep(1.0)  # process events in 1-sec intervals
 
-    except KeyboardInterrupt:
-        logger.warning("Received CTRL+C, shutting down")
-        stop.set()
+        except KeyboardInterrupt:
+            logger.warning("Received CTRL+C, shutting down")
+            stop.set()
+            continue
 
-    except Exception as e:
-        logger.exception(e)
-        raise e
+        except Exception as e:
+            logger.exception(e)
+            raise e
 
-    finally:
-        logger.debug("Shutting down executor")
-        executor.shutdown()
-        logger.debug("Closing subscriber channel")
-        sub.close()
-        logger.debug("Closing publisher channel")
-        pub.close()
+        finally:
+            logger.debug("Shutting down executor")
+            executor.shutdown()
+            logger.debug("Stopping store")
+            store.stop()
+            logger.debug("Closing subscriber channel")
+            sub.close()
+            logger.debug("Closing publisher channel")
+            pub.close()
