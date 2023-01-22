@@ -25,7 +25,6 @@ from ttq.command.run import run
 from ttq.model.config import Config
 from ttq.model.command import Command
 from ttq.model.response import Accepted, Completed
-from ttq.util.mapping import compile_type_map
 
 # ------------------------------------------------------------------------------
 # TESTS
@@ -76,11 +75,9 @@ def test_simple(caplog):
     caplog.set_level(logging.DEBUG, logger="ttq")
     expected_output = "test_command_run_test_simple.txt"
 
-    app = compile_type_map(
-        {
-            EventTest: EchoCommand(TEST_OUTPUT_DIR),
-        }
-    )
+    app = {
+        EventTest: EchoCommand(TEST_OUTPUT_DIR),
+    }
 
     # run server (subject under test) in separate thread, shut down after n secs
 
@@ -267,6 +264,5 @@ TEST_CONFIG = Config(
     connection=ConnectionParameters(host="localhost"),
     subscribe=TEST_REQUEST_QUEUE,
     publish="",
-    events=[EventTest],
     storage_file=os.path.join(TEST_OUTPUT_DIR, "process_map"),
 )

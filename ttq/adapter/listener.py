@@ -23,14 +23,14 @@ class Listener:
         queue_name: str,
         prefetch_count: int,
         events: Iterable[Type[EventProtocol]],
-        app: command.FromEvent,
+        to_command: command.FromEvent,
         executor: Executor,
     ):
         self.channel = channel
         self.queue_name = queue_name
         self.prefetch_count = prefetch_count
         self.events = events
-        self.app = app
+        self.to_command = to_command
         self.executor = executor
 
         self.channel.basic_qos(prefetch_count=self.prefetch_count)
@@ -60,7 +60,7 @@ class Listener:
         context = self._context(p, body)
         event = self._decode(body, channel=ch, context=context)
         logger.debug(f"Converting event {event.type_name} to command")
-        command = self.app(event)
+        command = self.to_command(event)
         logger.debug(f"Submitting command {command.name}")
         f = self.executor.submit(command, context)  # run command in thread + subprocess
         f.add_done_callback(_handle_result)

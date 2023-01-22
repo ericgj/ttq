@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional, Type, Callable
+from typing import List, Optional, Type, Callable, Mapping
 
 from ..model.event import EventProtocol
 
@@ -15,3 +15,4 @@ class Command:
 
 
 FromEvent = Callable[[Type[EventProtocol]], Command]
+EventMapping = Mapping[Type[EventProtocol], FromEvent]

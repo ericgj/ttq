@@ -9,11 +9,15 @@ from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
 from ..model.config import Config
 from ..model import command
+from ..util.mapping import compile_type_map
 
 logger = logging.getLogger(__name__)
 
 
-def run(config: Config, app: command.FromEvent, stop: Optional[Event] = None):
+def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None):
+
+    to_command = compile_type_map(app)
+    events = [k for k in app]
 
     logger.debug("Connecting to subscriber channel")
     sub = BlockingConnection(config.connection)
@@ -41,8 +45,8 @@ def run(config: Config, app: command.FromEvent, stop: Optional[Event] = None):
             if config.prefetch_count is None
             else config.prefetch_count
         ),
-        events=config.events,
-        app=app,
+        events=events,
+        to_command=to_command,
         executor=executor,
     )
 
