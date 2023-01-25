@@ -8,8 +8,10 @@ from pika import ConnectionParameters
 class Config:
     connection: ConnectionParameters
     storage_file: str
-    subscribe: str
-    publish: str = ""
+    subscribe_queue: str
+    subscribe_abort_exchange: str
+    publish_exchange: str = ""
+    publish_abort_exchange: str = ""
     prefetch_count: Optional[int] = None
     max_workers: Optional[int] = None
 

@@ -53,6 +53,7 @@ class Store(Thread):
     def queue(self) -> Queue:
         return self._queue
 
+    # Q: not a threadsafe read, is this a problem?
     def get(self, key) -> Any:
         with self.lmdb.open(self.file_name, "r") as db:
             return db[key]

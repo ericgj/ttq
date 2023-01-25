@@ -20,26 +20,26 @@ class Executor:
         *,
         channel: BlockingChannel,
         exchange_name: str,
-        store: Store,
+        abort_exchange_name: str,
         max_workers: Optional[int] = None,
     ):
         self.channel = channel
         self.exchange_name = exchange_name
-        self.store = store
+        self.abort_exchange_name = abort_exchange_name
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
 
     @property
     def max_workers(self) -> int:
         return self._executor._max_workers
 
-    def submit(self, command: Command, context: Context) -> Future:
-        f = self._executor.submit(self._exec, command, context)
+    def submit(self, command: Command, context: Context, store: Store) -> Future:
+        f = self._executor.submit(self._exec, command, context, store)
         return f
 
     def shutdown(self):
         self._executor.shutdown()
 
-    def _exec(self, command: Command, context: Context):
+    def _exec(self, command: Command, context: Context, store: Store):
         with Popen(
             command.args,
             shell=command.shell,
@@ -55,7 +55,7 @@ class Executor:
             logger.debug(
                 f"Storing process started for correlation_id {context.correlation_id}"
             )
-            self.store.queue.put(Put(context.correlation_id, pid))
+            store.queue.put(Put(context.correlation_id, pid))
 
             logger.debug(f"Publishing process started to {context.reply_to}")
             self._publish_process_started(context)
@@ -84,7 +84,7 @@ class Executor:
                 logger.debug(
                     f"Storing process completed for correlation_id {context.correlation_id}"
                 )
-                self.store.queue.put(Delete(context.correlation_id))
+                store.queue.put(Delete(context.correlation_id))
 
     def _publish_process_started(self, context: Context):
         resp = Accepted()

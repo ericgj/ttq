@@ -22,33 +22,40 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     logger.debug("Connecting to subscriber channel")
     sub = BlockingConnection(config.connection)
     sub_ch = sub.channel()
-    sub_ch.queue_declare(queue=config.subscribe)
+    sub_ch.queue_declare(queue=config.subscribe_queue)
+    sub_ch.exchange_declare(exchange=config.subscribe_abort_exchange)
 
     logger.debug("Connecting to publisher channel")
     pub = BlockingConnection(config.connection)
     pub_ch = pub.channel()
 
+    logger.debug("Starting process map store")
     store = Store(config.storage_file, ProcessMap, thread_name="ProcessMap")
     store.start()
 
     executor = Executor(
         channel=pub_ch,
-        exchange_name=config.publish,
+        exchange_name=config.publish_exchange,
+        abort_exchange_name=config.publish_abort_exchange,
         max_workers=config.max_workers,
-        store=store,
     )
-    _ = Listener(
-        channel=sub_ch,
-        queue_name=config.subscribe,
-        prefetch_count=(
-            executor.max_workers
-            if config.prefetch_count is None
-            else config.prefetch_count
-        ),
+
+    prefetch_count = (
+        executor.max_workers if config.prefetch_count is None else config.prefetch_count
+    )
+    logger.debug(f"Setting prefetch count to {prefetch_count}")
+    sub_ch.basic_qos(prefetch_count=prefetch_count)
+
+    listener = Listener(
+        queue_name=config.subscribe_queue,
+        abort_exchange_name=config.subscribe_abort_exchange,
         events=events,
         to_command=to_command,
+        store=store,
         executor=executor,
     )
+    logger.debug("Binding subscriber channel consumers")
+    listener.bind(sub_ch)
 
     while not stop.is_set():
         try:

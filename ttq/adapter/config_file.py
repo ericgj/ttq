@@ -25,8 +25,10 @@ def parse(raw: dict) -> Tuple[Config, Optional[dict]]:
         Config(
             connection=parse_connection(top),
             storage_file=parse_storage_file(top),
-            subscribe=parse_subscribe(top),
-            publish=parse_publish(top),
+            subscribe_queue=parse_subscribe_queue(top),
+            subscribe_abort_exchange=parse_subscribe_abort_exchange(top),
+            publish_exchange=parse_publish_exchange(top),
+            publish_abort_exchange=parse_publish_abort_exchange(top),
             prefetch_count=parse_prefetch_count(top),
             max_workers=parse_max_workers(top),
         ),
@@ -43,12 +45,22 @@ def parse_storage_file(raw) -> str:
     return parse_required_string(raw, "storage_file", TOP_LEVEL)
 
 
-def parse_subscribe(raw) -> str:
-    return parse_required_string(raw, "subscribe", TOP_LEVEL)
+def parse_subscribe_queue(raw) -> str:
+    return parse_required_string(raw, "subscribe_queue", TOP_LEVEL)
 
 
-def parse_publish(raw) -> str:
-    s = parse_optional_string(raw, "publish")
+def parse_subscribe_abort_exchange(raw) -> str:
+    s = parse_optional_string(raw, "subscribe_abort_exchange")
+    return "" if s is None else s
+
+
+def parse_publish_exchange(raw) -> str:
+    s = parse_optional_string(raw, "publish_exchange")
+    return "" if s is None else s
+
+
+def parse_publish_abort_exchange(raw) -> str:
+    s = parse_optional_string(raw, "publish_abort_exchange")
     return "" if s is None else s
 
 

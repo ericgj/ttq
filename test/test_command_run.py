@@ -76,7 +76,7 @@ def test_simple(caplog):
     expected_output = "test_command_run_test_simple.txt"
 
     app = {
-        EventTest: EchoCommand(TEST_OUTPUT_DIR),
+        EchoEvent: EchoCommand(TEST_OUTPUT_DIR),
     }
 
     # run server (subject under test) in separate thread, shut down after n secs
@@ -95,13 +95,15 @@ def test_simple(caplog):
     # publish test message and expect result using simple RPC client, waiting 1 sec
 
     client = SimpleRpcClient(
+        publish_exchange=TEST_REQUEST_EXCHANGE,
         publish_queue=TEST_REQUEST_QUEUE,
         result_queue=TEST_RESPONSE_QUEUE,
         timeout=1,
     )
     conn = BlockingConnection(TEST_CONFIG.connection)
-    was_accepted, result = client(
-        conn, f"Hello world!\n{expected_output}", type="EventTest"
+    client.bind(conn)
+    _, was_accepted, result = client(
+        f"Hello world!\n{expected_output}", type="EchoEvent"
     )
 
     if server_th.is_alive():
@@ -118,15 +120,15 @@ def test_simple(caplog):
 
 
 @dataclass
-class EventTest:
-    type_name = "EventTest"
+class EchoEvent:
+    type_name = "EchoEvent"
     content_type = "text/plain"
     encoding: Optional[str]
     payload: str
     output_file: str
 
     @classmethod
-    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "EventTest":
+    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "EchoEvent":
         s = data.decode() if encoding is None else data.decode(encoding)
         lines = s.split("\n")
         return cls(
@@ -144,7 +146,7 @@ class EchoCommand:
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
 
-    def __call__(self, event: EventTest) -> Command:
+    def __call__(self, event: EchoEvent) -> Command:
         return Command(
             name="echo",
             args=[
@@ -171,10 +173,12 @@ class SimpleRpcClient:
     def __init__(
         self,
         *,
+        publish_exchange: str,
         publish_queue: str,
         result_queue: str,
         timeout: float,
     ):
+        self.publish_exchange = publish_exchange
         self.publish_queue = publish_queue
         self.result_queue = result_queue
         self.timeout = timeout
@@ -182,7 +186,11 @@ class SimpleRpcClient:
         self.accepted_result_received = False
         self.completed_result: Optional[int] = None
 
-    def start(self, conn: BlockingConnection) -> Tuple[BlockingChannel, Optional[str]]:
+        self.connection: Optional[BlockingConnection] = None
+        self.channel: Optional[BlockingChannel] = None
+        self.callback_queue: Optional[str] = None
+
+    def bind(self, conn: BlockingConnection):
         channel = conn.channel()
 
         r = channel.queue_declare(queue=self.result_queue)
@@ -192,24 +200,30 @@ class SimpleRpcClient:
             queue=callback_queue, on_message_callback=self.callback, auto_ack=True
         )
 
-        return (channel, callback_queue)
+        self.connection = conn
+        self.channel = channel
+        self.callback_queue = callback_queue
 
     def __call__(
         self,
-        conn: BlockingConnection,
         msg: str,
         *,
         type: str,
         content_type: str = "text/plain",
         encoding: Optional[str] = None,
-    ) -> Tuple[bool, Optional[int]]:
-        channel, callback_queue = self.start(conn)
+    ) -> Tuple[str, bool, Optional[int]]:
+        if (
+            self.connection is None
+            or self.channel is None
+            or self.callback_queue is None
+        ):
+            raise ValueError("You must call bind first")
         self.corr_id = str(uuid4())
-        channel.basic_publish(
-            exchange="",
+        self.channel.basic_publish(
+            exchange=self.publish_exchange,
             routing_key=self.publish_queue,
             properties=BasicProperties(
-                reply_to=callback_queue,
+                reply_to=self.callback_queue,
                 correlation_id=self.corr_id,
                 content_encoding=encoding,
                 content_type=content_type,
@@ -217,8 +231,8 @@ class SimpleRpcClient:
             ),
             body=msg.encode() if encoding is None else msg.encode(encoding),
         )
-        conn.sleep(self.timeout)  # process events up to self.timeout
-        return (self.accepted_result_received, self.completed_result)
+        self.connection.sleep(self.timeout)  # process events up to self.timeout
+        return (self.corr_id, self.accepted_result_received, self.completed_result)
 
     def callback(self, ch, method, props, body):
         try:
@@ -258,11 +272,14 @@ class SimpleRpcClient:
 # Globals
 # ------------------------------------------------------------------------------
 
+TEST_REQUEST_EXCHANGE = ""
 TEST_REQUEST_QUEUE = "test_command_run"
 TEST_RESPONSE_QUEUE = "test_command_run-response"
+TEST_REQUEST_ABORT_EXCHANGE = "test_command_run-abort"
 TEST_CONFIG = Config(
     connection=ConnectionParameters(host="localhost"),
-    subscribe=TEST_REQUEST_QUEUE,
-    publish="",
+    subscribe_queue=TEST_REQUEST_QUEUE,
+    subscribe_abort_exchange=TEST_REQUEST_ABORT_EXCHANGE,
     storage_file=os.path.join(TEST_OUTPUT_DIR, "process_map"),
+    prefetch_count=1,
 )
