@@ -1,285 +1,476 @@
-from dataclasses import dataclass
-import json
 import logging
-import os
 import os.path
+import os
+from queue import Queue
 import shutil
 import threading
-from typing import Tuple, Optional
+from typing import List, Optional
 from uuid import uuid4
 
-TEST_LOG_DIR = os.path.join(os.path.dirname(__file__), "log")
-TEST_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
+OUTPUT_DIR = os.path.join("test", "output", "test_command_run")
+LOG_DIR = os.path.join("test", "log")
 
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(levelname)-1s | %(asctime)s | %(name)s | %(module)s | %(threadName)s | %(message)s",
 )
-logger = logging.getLogger("ttq")
+logger = logging.getLogger(__name__)
 
 from pika.connection import ConnectionParameters
 from pika.adapters.blocking_connection import BlockingConnection, BlockingChannel
-from pika.spec import BasicProperties
+from pika.spec import Basic, BasicProperties
 
 from ttq.command.run import run
 from ttq.model.config import Config
-from ttq.model.command import Command
-from ttq.model.response import Accepted, Completed
+from ttq.model.event import EventProtocol
+from ttq.model.command import Command, EventMapping
 
-# ------------------------------------------------------------------------------
-# TESTS
-# ------------------------------------------------------------------------------
+from util.script import Script, ScriptHandlerProtocol, send
+from util.expect import Expect, that, evaluate
+from util.queue import queue_iterator
 
 
 def setup_module(_):
-    create_test_log_dir()
-    create_test_output_dir()
     add_file_logger()
 
 
-def setup_function(_):
-    purge_test_queues()
+def setup_function(f):
+    create_test_output_dir(f.__name__)
 
 
-def create_test_log_dir():
-    shutil.rmtree(TEST_LOG_DIR, ignore_errors=True)
-    os.mkdir(TEST_LOG_DIR)
-
-
-def create_test_output_dir():
-    shutil.rmtree(TEST_OUTPUT_DIR, ignore_errors=True)
-    os.mkdir(TEST_OUTPUT_DIR)
+def create_test_output_dir(name):
+    dir = os.path.join(OUTPUT_DIR, name)
+    shutil.rmtree(dir, ignore_errors=True)
+    os.makedirs(dir, exist_ok=True)
 
 
 def add_file_logger():
     f = logging.Formatter(
         "%(levelname)-1s | %(asctime)s | %(name)s | %(module)s | %(threadName)s | %(message)s",
     )
-    h = logging.FileHandler(os.path.join(TEST_LOG_DIR, "test_command_run.log"))
+    h = logging.FileHandler(os.path.join(LOG_DIR, "test_command_run.log"), mode="w")
     h.setFormatter(f)
-    logger.addHandler(h)
+    base_logger = logging.getLogger()
+    base_logger.addHandler(h)
 
 
-def purge_test_queues():
-    conn = BlockingConnection(TEST_CONFIG.connection)
-    ch = conn.channel()
-    try:
-        ch.queue_purge(TEST_REQUEST_QUEUE)
-        ch.queue_purge(TEST_RESPONSE_QUEUE)
-    except Exception:
-        pass
+def output_dir(test_name: str):
+    return os.path.join(OUTPUT_DIR, test_name)
 
 
-def test_simple(caplog):
+def test_run_success(caplog):
+    caplog.set_level(logging.DEBUG, logger="ttq")
+    caplog.set_level(logging.DEBUG, logger=__name__)
+
+    dur = 2
+    script = send(SleepEvent(dur))
+
+    expected: List[Expect[Response]] = [
+        that(is_accepted_response) & ~that(is_aborted_response),
+        that(is_completed_response)
+        & ~that(is_aborted_response)
+        & ~that(is_error_response),
+    ]
+
+    config = TestingConfig(
+        name="test_command_run",
+        temp_dir=output_dir("test_run_success"),
+    )
+
+    app = {SleepEvent: SleepCommand()}
+
+    run_script_and_evaluate(
+        config=config,
+        script=script,
+        expected=expected,
+        app=app,
+        stop_after=dur + 1,
+    )
+
+
+def test_run_and_abort_success(caplog):
+    """
+    Note this *usually* passes. But sometimes the 3rd and 4th response
+    come back in reverse order from expected.
+    """
 
     caplog.set_level(logging.DEBUG, logger="ttq")
-    expected_output = "test_command_run_test_simple.txt"
+    caplog.set_level(logging.DEBUG, logger=__name__)
 
-    app = {
-        EchoEvent: EchoCommand(TEST_OUTPUT_DIR),
-    }
+    dur = 3
+    script = send(SleepEvent(dur)).and_wait(1).and_abort(-1)
 
-    # run server (subject under test) in separate thread, shut down after n secs
+    expected: List[Expect[Response]] = [
+        that(is_accepted_response) & ~that(is_aborted_response),
+        that(is_accepted_response) & that(is_aborted_response),
+        that(is_completed_response)
+        & ~that(is_aborted_response)
+        & that(is_error_response),
+        that(is_completed_response) & that(is_aborted_response),
+    ]
 
-    server_th = threading.Thread(
-        name="test_command_run_server",
+    config = TestingConfig(
+        name="test_command_run_and_abort",
+        temp_dir=output_dir("test_run_and_abort_success"),
+    )
+
+    app = {SleepEvent: SleepCommand()}
+
+    run_script_and_evaluate(
+        config=config,
+        script=script,
+        expected=expected,
+        app=app,
+        stop_after=dur + 1,
+    )
+
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+
+class TestingConfig:
+    __test__ = False
+
+    def __init__(self, *, name: str, temp_dir: str):
+        self.name = name
+        self.temp_dir = temp_dir
+
+    @property
+    def request_exchange(self) -> str:
+        return f"{self.name}-req-x"
+
+    @property
+    def request_queue(self) -> str:
+        return f"{self.name}-req"
+
+    @property
+    def response_exchange(self) -> str:
+        return ""
+
+    @property
+    def response_queue(self) -> str:
+        return f"{self.name}-resp"
+
+    @property
+    def abort_request_exchange(self) -> str:
+        return f"{self.name}-abort-req-x"
+
+    @property
+    def abort_response_exchange(self) -> str:
+        return f"{self.name}-abort-resp-x"
+
+    @property
+    def abort_response_queue(self) -> str:
+        return f"{self.name}-abort-resp"
+
+    @property
+    def connection_parameters(self) -> ConnectionParameters:
+        return ConnectionParameters(host="localhost")
+
+    @property
+    def ttq(self) -> Config:
+        return Config(
+            connection=self.connection_parameters,
+            subscribe_queue=self.request_queue,
+            subscribe_abort_exchange=self.abort_request_exchange,
+            storage_file=os.path.join(self.temp_dir, "process_map"),
+            prefetch_count=1,
+        )
+
+
+class Response:
+    def __init__(self, properties: BasicProperties, body: bytes):
+        self.properties = properties
+        self.body = body
+
+    @property
+    def type_name(self) -> Optional[str]:
+        return self.properties.type
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}(properties={self.properties})"
+
+
+class AbortResponse(Response):
+    pass
+
+
+def run_script_and_evaluate(
+    config: TestingConfig,
+    script: Script,
+    expected: List[Expect[Response]],
+    app: EventMapping,
+    stop_after: float,
+):
+    logger.debug("connect and bind request channel")
+    request_ch = connect_and_bind_request_channel(config)
+    logger.debug("connect and bind response channel")
+    resp_ch = connect_and_bind_response_channel(config)
+
+    resp_q: "Queue[Response]" = Queue()
+    relay = Relay(
+        response_queue=config.response_queue,
+        abort_response_queue=config.abort_response_queue,
+        local_queue=resp_q,
+    )
+    relay.bind(resp_ch)
+
+    publisher = ScriptPublisher(
+        channel=request_ch,
+        request_exchange=config.request_exchange,
+        request_queue=config.request_queue,
+        abort_request_exchange=config.abort_request_exchange,
+        response_queue=config.response_queue,
+        abort_response_queue=config.abort_response_queue,
+    )
+
+    stop = threading.Event()
+    timer = threading.Timer(stop_after, stop.set)
+
+    ttq_th = run_ttq_in_thread(
+        name="ttq",
+        config=config.ttq,
+        app=app,
+        stop=stop,
+    )
+    script_th = run_script_in_thread(
+        name="script",
+        script=script,
+        handler=publisher,
+    )
+
+    logger.debug("start running ttq in thread")
+    ttq_th.start()
+
+    logger.debug("start publishing events in thread")
+    script_th.start()
+
+    timer.start()
+
+    logger.debug("listening for responses")
+    while not stop.is_set():
+        resp_ch.connection.sleep(0.1)
+
+    logger.debug("timer set, joining script thread")
+    script_th.join()
+
+    logger.debug("timer set, joining ttq thread")
+    ttq_th.join()
+
+    evaluate(expected, queue_iterator(resp_q))
+
+
+def is_accepted_response(r: Response) -> bool:
+    return r.type_name == "Accepted"
+
+
+def is_completed_response(r: Response) -> bool:
+    return r.type_name == "Completed"
+
+
+def is_aborted_response(r: Response) -> bool:
+    return isinstance(r, AbortResponse)
+
+
+def is_success_response(r: Response) -> bool:
+    if r.type_name == "Completed":
+        rc = int(r.body.decode())  # quick n dirty
+        return rc == 0
+    return False
+
+
+def is_error_response(r: Response) -> bool:
+    if r.type_name == "Completed":
+        rc = int(r.body.decode())  # quick n dirty
+        return rc != 0
+    return False
+
+
+def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
+    c = connect(config)
+    ch = c.channel()
+
+    # Note: abort request exchange bound on the fly to transient queues, so
+    # not bound here.
+
+    ch.queue_declare(config.request_queue, auto_delete=True)
+
+    if not config.request_exchange == "":
+        ch.exchange_declare(config.request_exchange, auto_delete=True)
+        ch.queue_bind(config.request_queue, config.request_exchange)
+
+    if not config.abort_request_exchange == "":
+        ch.exchange_declare(config.abort_request_exchange, auto_delete=True)
+
+    return ch
+
+
+def connect_and_bind_response_channel(config: TestingConfig) -> BlockingChannel:
+    c = connect(config)
+    ch = c.channel()
+
+    ch.queue_declare(config.response_queue, auto_delete=True)
+    ch.queue_declare(config.abort_response_queue, auto_delete=True)
+
+    if not config.response_exchange == "":
+        ch.exchange_declare(config.response_exchange, auto_delete=True)
+        ch.queue_bind(config.response_queue, config.response_exchange)
+
+    if not config.abort_response_exchange == "":
+        ch.exchange_declare(config.abort_response_exchange, auto_delete=True)
+        ch.queue_bind(config.abort_response_queue, config.abort_response_exchange)
+
+    return ch
+
+
+def connect(config: TestingConfig) -> BlockingConnection:
+    return BlockingConnection(config.connection_parameters)
+
+
+def run_ttq_in_thread(
+    name: str,
+    config: Config,
+    app: EventMapping,
+    stop: threading.Event,
+):
+    return threading.Thread(
+        name=name,
         target=run,
         kwargs={
-            "config": TEST_CONFIG,
+            "config": config,
             "app": app,
-            "stop": stop_after(1),
+            "stop": stop,
         },
     )
-    server_th.start()
 
-    # publish test message and expect result using simple RPC client, waiting 1 sec
 
-    client = SimpleRpcClient(
-        publish_exchange=TEST_REQUEST_EXCHANGE,
-        publish_queue=TEST_REQUEST_QUEUE,
-        result_queue=TEST_RESPONSE_QUEUE,
-        timeout=1,
-    )
-    conn = BlockingConnection(TEST_CONFIG.connection)
-    client.bind(conn)
-    _, was_accepted, result = client(
-        f"Hello world!\n{expected_output}", type="EchoEvent"
+def run_script_in_thread(
+    name: str,
+    script: Script,
+    handler: ScriptHandlerProtocol,
+):
+    return threading.Thread(
+        name=name,
+        target=script.run,
+        args=[handler],
     )
 
-    if server_th.is_alive():
-        server_th.join()
 
-    assert was_accepted
-    assert result == 0
-    assert os.path.exists(os.path.join(TEST_OUTPUT_DIR, expected_output))
-
-
-# ------------------------------------------------------------------------------
-# Resources used in tests
-# ------------------------------------------------------------------------------
-
-
-@dataclass
-class EchoEvent:
-    type_name = "EchoEvent"
+class SleepEvent:
+    type_name = "SleepEvent"
     content_type = "text/plain"
-    encoding: Optional[str]
-    payload: str
-    output_file: str
+
+    def __init__(self, duration: float):
+        self.duration = duration
 
     @classmethod
-    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "EchoEvent":
-        s = data.decode() if encoding is None else data.decode(encoding)
-        lines = s.split("\n")
-        return cls(
-            encoding=encoding,
-            payload=lines[0],
-            output_file=lines[1],
-        )
+    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "SleepEvent":
+        s = data.decode() if encoding is None else data.decode(encoding=encoding)
+        return cls(float(s))
 
     def encode(self, *, encoding: Optional[str] = None) -> bytes:
-        s = "\n".join([self.payload, self.output_file])
-        return s.encode() if encoding is None else s.encode(encoding)
+        s = str(self.duration)
+        return s.encode() if encoding is None else s.encode(encoding=encoding)
 
 
-class EchoCommand:
-    def __init__(self, output_dir: str):
-        self.output_dir = output_dir
-
-    def __call__(self, event: EchoEvent) -> Command:
-        return Command(
-            name="echo",
-            args=[
-                "echo",
-                event.payload,
-                ">>",
-                os.path.join(self.output_dir, event.output_file),
-            ],
-            shell=True,
-        )
+class SleepCommand:
+    def __call__(self, event: SleepEvent) -> Command:
+        n = int(event.duration + 1)
+        return Command("ping", ["ping", "-n", str(n), "127.0.0.1"])
 
 
-def stop_after(secs: float):
-    e = threading.Event()
-    t = threading.Timer(secs, lambda: e.set())
-    t.start()
-    return e
-
-
-client_logger = logging.getLogger("ttq.test.simple_rpc_client")
-
-
-class SimpleRpcClient:
+class Relay:
     def __init__(
         self,
         *,
-        publish_exchange: str,
-        publish_queue: str,
-        result_queue: str,
-        timeout: float,
+        response_queue: str,
+        abort_response_queue: str,
+        local_queue: "Queue[Response]",
     ):
-        self.publish_exchange = publish_exchange
-        self.publish_queue = publish_queue
-        self.result_queue = result_queue
-        self.timeout = timeout
-        self.corr_id: Optional[str] = None
-        self.accepted_result_received = False
-        self.completed_result: Optional[int] = None
+        self.response_queue = response_queue
+        self.abort_response_queue = abort_response_queue
+        self.local_queue = local_queue
 
-        self.connection: Optional[BlockingConnection] = None
-        self.channel: Optional[BlockingChannel] = None
-        self.callback_queue: Optional[str] = None
+    def bind(self, ch: BlockingChannel):
+        ch.basic_consume(self.response_queue, self._handle)
+        ch.basic_consume(self.abort_response_queue, self._handle_abort)
 
-    def bind(self, conn: BlockingConnection):
-        channel = conn.channel()
+    def _handle(
+        self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
+    ):
+        r = Response(p, body)
+        logger.debug(f"Received: {r}")
+        self.local_queue.put(r)
+        if m.delivery_tag is not None:
+            ch.basic_ack(m.delivery_tag)
 
-        r = channel.queue_declare(queue=self.result_queue)
-        callback_queue = r.method.queue
+    def _handle_abort(
+        self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
+    ):
+        r = AbortResponse(p, body)
+        logger.debug(f"Received: {r}")
+        self.local_queue.put(r)
+        if m.delivery_tag is not None:
+            ch.basic_ack(m.delivery_tag)
 
-        channel.basic_consume(
-            queue=callback_queue, on_message_callback=self.callback, auto_ack=True
-        )
 
-        self.connection = conn
-        self.channel = channel
-        self.callback_queue = callback_queue
-
-    def __call__(
+class ScriptPublisher:
+    def __init__(
         self,
-        msg: str,
+        channel: BlockingChannel,
         *,
-        type: str,
-        content_type: str = "text/plain",
-        encoding: Optional[str] = None,
-    ) -> Tuple[str, bool, Optional[int]]:
-        if (
-            self.connection is None
-            or self.channel is None
-            or self.callback_queue is None
-        ):
-            raise ValueError("You must call bind first")
-        self.corr_id = str(uuid4())
-        self.channel.basic_publish(
-            exchange=self.publish_exchange,
-            routing_key=self.publish_queue,
-            properties=BasicProperties(
-                reply_to=self.callback_queue,
-                correlation_id=self.corr_id,
-                content_encoding=encoding,
-                content_type=content_type,
-                type=type,
-            ),
-            body=msg.encode() if encoding is None else msg.encode(encoding),
+        request_exchange: str,
+        request_queue: str,
+        abort_request_exchange: str,
+        response_queue: str,
+        abort_response_queue: str,
+    ):
+        self.channel = channel
+        self.request_exchange = request_exchange
+        self.request_queue = request_queue
+        self.abort_request_exchange = abort_request_exchange
+        self.response_queue = response_queue
+        self.abort_response_queue = abort_response_queue
+
+    def send(self, event: EventProtocol) -> str:
+        corr_id = str(uuid4())
+        logger.debug(
+            f"Publishing event {event} to {self.request_exchange}, "
+            f"type: {event.type_name}, "
+            f"routing_key: {self.request_queue}, "
+            f"reply_to: {self.response_queue}, "
+            f"correlation_id: {corr_id}"
         )
-        self.connection.sleep(self.timeout)  # process events up to self.timeout
-        return (self.corr_id, self.accepted_result_received, self.completed_result)
+        self.channel.basic_publish(
+            exchange=self.request_exchange,
+            routing_key=self.request_queue,
+            properties=BasicProperties(
+                reply_to=self.response_queue,
+                correlation_id=corr_id,
+                type=event.type_name,
+                content_type="text/plain",
+            ),
+            body=event.encode(),
+        )
+        return corr_id
 
-    def callback(self, ch, method, props, body):
-        try:
-            t = props.type
-            if t == Accepted.type_name:
-                self.handle_accepted_result()
-            elif t == Completed.type_name:
-                self.handle_completed_result(props, body)
-            else:
-                raise ValueError(f"Unknown response type {t}")
-        except Exception as e:
-            logger.error(f"SimpleRpcClient NACK: {e}")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-
-    def handle_accepted_result(self):
-        client_logger.debug("handle_accepted_result")
-        if self.accepted_result_received:
-            raise ValueError("Received results out of order")
-        self.accepted_result_received = True
-
-    def handle_completed_result(self, props, body):
-        client_logger.debug("handle_completed_result")
-        if not self.accepted_result_received:
-            raise ValueError("Received results out of order")
-        t = props.type
-        ct = props.content_type
-        r = body.decode(encoding=props.content_encoding)
-        if ct == "text/plain":
-            self.completed_result = int(r)
-        elif ct == "application/json":
-            self.completed_result = json.loads(r)["returncode"]
-        else:
-            raise ValueError(f"Unknown content type: {ct} for response type {t}")
-
-
-# ------------------------------------------------------------------------------
-# Globals
-# ------------------------------------------------------------------------------
-
-TEST_REQUEST_EXCHANGE = ""
-TEST_REQUEST_QUEUE = "test_command_run"
-TEST_RESPONSE_QUEUE = "test_command_run-response"
-TEST_REQUEST_ABORT_EXCHANGE = "test_command_run-abort"
-TEST_CONFIG = Config(
-    connection=ConnectionParameters(host="localhost"),
-    subscribe_queue=TEST_REQUEST_QUEUE,
-    subscribe_abort_exchange=TEST_REQUEST_ABORT_EXCHANGE,
-    storage_file=os.path.join(TEST_OUTPUT_DIR, "process_map"),
-    prefetch_count=1,
-)
+    def abort(self, routing_key: str):
+        corr_id = str(uuid4())
+        logger.debug(
+            f"Publishing abort to {self.abort_request_exchange}, "
+            f"routing_key: {routing_key}, "
+            f"reply_to: {self.abort_response_queue}, "
+            f"correlation_id: {corr_id}"
+        )
+        self.channel.basic_publish(
+            exchange=self.abort_request_exchange,
+            routing_key=routing_key,
+            properties=BasicProperties(
+                reply_to=self.abort_response_queue,
+                correlation_id=corr_id,
+                content_type="text/plain",
+            ),
+            body=b"",
+        )

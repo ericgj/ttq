@@ -4,7 +4,8 @@ from typing import Any, Optional, Dict
 
 @dataclass
 class Context:
-    queue: str
+    exchange: str
+    routing_key: str
     content_length: int
     content_type: Optional[str]
     content_encoding: Optional[str]

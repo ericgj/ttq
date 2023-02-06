@@ -18,10 +18,11 @@ class Accepted:
     def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
         if content_type == "text/plain":
             return b""
-        if content_type == "application/json":
+        elif content_type == "application/json":
             s = json.dumps({})
             return s.encode() if encoding is None else s.encode(encoding)
-        raise NoEncodingForContentType(self.type_name, content_type)
+        else:
+            raise NoEncodingForContentType(self.type_name, content_type)
 
 
 @dataclass
@@ -39,7 +40,8 @@ class Completed:
         if content_type == "text/plain":
             s = str(self.returncode)
             return s.encode() if encoding is None else s.encode(encoding)
-        if content_type == "application/json":
+        elif content_type == "application/json":
             s = json.dumps(self.to_dict())
             return s.encode() if encoding is None else s.encode(encoding)
-        raise NoEncodingForContentType(self.type_name, content_type)
+        else:
+            raise NoEncodingForContentType(self.type_name, content_type)

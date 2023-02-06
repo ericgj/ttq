@@ -74,6 +74,7 @@ class Store(Thread):
                     del db[op.key]
                 else:
                     raise ValueError(f"Unknown operation type: {op}")
+                self._queue.task_done()
             except Empty:
                 continue
 

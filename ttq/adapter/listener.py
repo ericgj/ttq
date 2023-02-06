@@ -1,6 +1,6 @@
 from concurrent.futures import Future
 import logging
-from typing import Iterable, Type
+from typing import Iterable, Type, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,36 +34,71 @@ class Listener:
         self.store = store
         self.executor = executor
 
-    def abort_queue_name(self, consumer_tag: str) -> str:
-        return "-".join([self.queue_name, "abort", consumer_tag])
-
-    def bind(self, channel: BlockingChannel):
-        logger.debug(f"Define message handling on queue {self.queue_name}")
-        consumer_tag = channel.basic_consume(
+    def bind(self, channel: BlockingChannel) -> str:
+        logger.debug(f"Bind message handling on queue {self.queue_name}")
+        return channel.basic_consume(
             queue=self.queue_name, on_message_callback=self._handle
         )
 
-        abort_queue_name = self.abort_queue_name(consumer_tag)
-        logger.debug(f"Declare abort queue {abort_queue_name}")
-        channel.queue_declare(abort_queue_name, exclusive=True)
+    def bind_abort(self, channel: BlockingChannel, context: Context) -> Tuple[str, str]:
+        ctx = context.to_dict()
+        logger.debug(
+            f"Declare transient abort queue for correlation_id {context.correlation_id}",
+            ctx,
+        )
+        r = channel.queue_declare(queue="", exclusive=True)
+        abort_queue_name = r.method.queue
 
         logger.debug(
-            f"Bind abort queue {abort_queue_name} to exchange "
-            f"{self.abort_exchange_name} with routing key {consumer_tag}"
+            f"Bind transient abort queue {abort_queue_name} to exchange "
+            f"{self.abort_exchange_name} with correlation_id {context.correlation_id} "
+            "as the routing key",
+            ctx,
         )
         channel.queue_bind(
-            queue=abort_queue_name,
             exchange=self.abort_exchange_name,
-            routing_key=consumer_tag,
+            queue=abort_queue_name,
+            routing_key=context.correlation_id,
         )
 
-        logger.debug(f"Define abort message handling on queue {abort_queue_name}")
-        channel.basic_consume(
+        logger.debug(
+            f"Bind message handling on transient abort queue {abort_queue_name}", ctx
+        )
+        consumer_tag = channel.basic_consume(
             queue=abort_queue_name, on_message_callback=self._handle_abort
         )
+        return (abort_queue_name, consumer_tag)
+
+    def unbind_abort(
+        self,
+        channel: BlockingChannel,
+        context: Context,
+        *,
+        consumer_tag: str,
+        queue_name: str,
+    ):
+        """
+        Note: unbinding and deleting queue not needed, transient queue takes care of itself
+        Also note this is run from an executor thread, hence the threadsafe operation
+        """
+
+        def _unbind():
+            channel.basic_cancel(consumer_tag)
+
+        ctx = context.to_dict()
+        logger.debug(
+            f"Unbinding message handling on transient abort queue {queue_name}", ctx
+        )
+        channel.connection.add_callback_threadsafe(_unbind)
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
-        context = get_context(self.queue_name, p, body)
+        def _ack():
+            ch.basic_ack(delivery_tag=m.delivery_tag)
+
+        def _nack():
+            ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
+
+        context = get_context(m, p, body)
         ctx = context.to_dict()
 
         try:
@@ -74,10 +109,12 @@ class Listener:
 
             logger.debug(f"Converting event {event.type_name} to command", ctx)
             command = self.to_command(event)
-            self._submit_command(ch, m.delivery_tag, context, command)
+            self._submit_command(ch, context, command)
+            ch.connection.add_callback_threadsafe(_ack)
 
         except Exception as e:
             if isinstance(e, Warning):
+                ch.connection.add_callback_threadsafe(_ack)
                 logging.info(
                     "Warning submitting command from message correlation_id = "
                     f"{context.correlation_id}",
@@ -85,6 +122,7 @@ class Listener:
                 )
                 logging.warning(e, ctx)
             else:
+                ch.connection.add_callback_threadsafe(_nack)
                 logging.info(
                     "Error submitting command from message correlation_id = "
                     f"{context.correlation_id}",
@@ -95,58 +133,100 @@ class Listener:
     def _handle_abort(
         self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes
     ):
-        context = get_context(self.abort_queue_name, p, body)
+        def _ack():
+            ch.basic_ack(delivery_tag=m.delivery_tag)
+
+        def _nack():
+            ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
+
+        context = get_context(m, p, body)
         ctx = context.to_dict()
 
         try:
-            command = self._abort_command(context.correlation_id)
-            self._submit_command(ch, m.delivery_tag, context, command)
+            command = self._abort_command(context.routing_key)
+            self._submit_command(ch, context, command)
+            ch.connection.add_callback_threadsafe(_ack)
 
         except Exception as e:
             if isinstance(e, Warning):
-                logging.info(
+                ch.connection.add_callback_threadsafe(_ack)
+                logger.info(
                     "Warning submitting abort command from message correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
-                logging.warning(e, ctx)
+                logger.warning(e, ctx)
             else:
-                logging.info(
+                ch.connection.add_callback_threadsafe(_nack)
+                logger.info(
                     "Error submitting abort command from message correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
-                logging.exception(e, ctx)
+                logger.exception(e, ctx)
 
-    def _submit_command(
-        self, channel: Channel, delivery_tag: str, context: Context, command: Command
-    ):
+    def _submit_command(self, channel: Channel, context: Context, command: Command):
         def _handle_result(f: Future):
-            logger.debug(
-                f"Handling result of command {command.name} for correlation_id {context.correlation_id}",
-                ctx,
-            )
+            # Note: this is run from the executor threads, and any exception
+            # here is swallowed. Hence the cautious error handling.
+
             try:
-                f.result()
-                logger.info(
-                    f"Success executing command {command.name} for correlation_id {context.correlation_id}",
-                    ctx,
-                )
-                channel.basic_ack(delivery_tag=delivery_tag)
+                # Note: exception thrown here if any error in executor thread,
+                # but note this _does not_ include any error in subprocess.
+                # Subprocess errors are handled as normal results. Exceptions
+                # might be thrown here publishing results, storing PID, etc.
+
+                cmd, rc = f.result()
+                if cmd.is_error(rc):
+                    logger.error(
+                        f"Error ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                        ctx,
+                    )
+                elif cmd.is_warning(rc):
+                    logger.warning(
+                        f"Warning ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                        ctx,
+                    )
+                elif cmd.is_success(rc):
+                    logger.info(
+                        f"Success ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                        ctx,
+                    )
+
             except Exception as e:
                 logger.info(
                     f"Error executing command {command.name} for correlation_id {context.correlation_id}",
                     ctx,
                 )
                 logger.exception(e, ctx)
-                channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+            finally:
+                # Attempt to unbind and delete the transient abort queue
+                # connected to this task (via correlation_id routing key)
+                # Note this is done threadsafe
+
+                try:
+                    self.unbind_abort(
+                        channel,
+                        context,
+                        queue_name=abort_queue_name,
+                        consumer_tag=abort_consumer_tag,
+                    )
+                except Exception as e:
+                    logger.info(
+                        f"Error unbinding transient abort queue {abort_queue_name}, ignoring",
+                        ctx,
+                    )
+                    logger.exception(e, ctx)
 
         ctx = context.to_dict()
+
         logger.debug(f"Submitting command {command.name}", ctx)
         f = self.executor.submit(  # run command in thread + subprocess
             command=command, context=context, store=self.store
         )
         f.add_done_callback(_handle_result)
+        abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
 
     def _decode(self, body: bytes, channel: Channel, context: Context) -> EventProtocol:
         try:
@@ -160,19 +240,24 @@ class Listener:
             raise EventNotHandled(context.type, context.content_type)
 
     def _abort_command(self, correlation_id: str) -> Command:
-        pid = self.store.get(correlation_id)
-        if pid is None:
+        pid: int
+        try:
+            pid = self.store.get(correlation_id)
+        except KeyError:
             raise ProcessNotFoundWarning(correlation_id)
         return Command(
             name="abort",
-            args=["taskkill", "/t", "/pid", str(pid)],
+            args=["taskkill", "/t", "/f", "/pid", str(pid)],
             shell=True,
         )
 
 
-def get_context(queue_name: str, properties: BasicProperties, body: bytes) -> Context:
+def get_context(
+    method: Basic.Deliver, properties: BasicProperties, body: bytes
+) -> Context:
     return Context(
-        queue=queue_name,
+        exchange=method.exchange,
+        routing_key=method.routing_key,
         content_length=len(body),
         content_type=properties.content_type,
         content_encoding=properties.content_encoding,

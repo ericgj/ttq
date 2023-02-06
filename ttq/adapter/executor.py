@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, Future
 import logging
 from subprocess import Popen, TimeoutExpired, PIPE
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
@@ -39,7 +39,9 @@ class Executor:
     def shutdown(self):
         self._executor.shutdown()
 
-    def _exec(self, command: Command, context: Context, store: Store):
+    def _exec(
+        self, command: Command, context: Context, store: Store
+    ) -> Tuple[Command, int]:
         with Popen(
             command.args,
             shell=command.shell,
@@ -53,27 +55,31 @@ class Executor:
             pid = p.pid
 
             logger.debug(
-                f"Storing process started for correlation_id {context.correlation_id}"
+                f"Storing process {command.name} started for correlation_id {context.correlation_id}"
             )
             store.queue.put(Put(context.correlation_id, pid))
 
-            logger.debug(f"Publishing process started to {context.reply_to}")
+            logger.debug(
+                f"Publishing process {command.name} started to {context.reply_to}"
+            )
             self._publish_process_started(context)
 
             try:
-                logger.debug("Running process")
+                logger.debug(f"Running process {command.name}")
                 out, err = p.communicate(timeout=command.timeout)
 
             except TimeoutExpired:
                 logger.warning(
-                    f"Process timeout expired at after {command.timeout} secs, killing"
+                    f"Process {command.name} timeout expired at after {command.timeout} secs, killing"
                 )
                 p.kill()
-                logger.debug("Finishing process")
+                logger.debug(f"Finishing process {command.name}")
                 out, err = p.communicate()
 
             finally:
-                logger.debug(f"Publishing process completed to {context.reply_to}")
+                logger.debug(
+                    f"Publishing process {command.name} completed to {context.reply_to}"
+                )
                 self._publish_process_completed(
                     args=p.args,
                     returncode=p.returncode,
@@ -82,23 +88,31 @@ class Executor:
                     context=context,
                 )
                 logger.debug(
-                    f"Storing process completed for correlation_id {context.correlation_id}"
+                    f"Storing process {command.name} completed for correlation_id {context.correlation_id}"
                 )
                 store.queue.put(Delete(context.correlation_id))
 
+            return (command, p.returncode)
+
     def _publish_process_started(self, context: Context):
+        def _publish():
+            self.channel.basic_publish(
+                exchange=self.exchange_name,
+                routing_key=context.reply_to,
+                properties=BasicProperties(
+                    type=resp.type_name,
+                    content_encoding="utf8",
+                    content_type=content_type,
+                    correlation_id=context.correlation_id,
+                ),
+                body=resp.encode(encoding="utf8", content_type=content_type),
+            )
+
         resp = Accepted()
-        self.channel.basic_publish(
-            exchange=self.exchange_name,
-            routing_key=context.reply_to,
-            properties=BasicProperties(
-                type=resp.type_name,
-                content_encoding="utf8",
-                content_type=context.content_type,
-                correlation_id=context.correlation_id,
-            ),
-            body=resp.encode(encoding="utf8", content_type=context.content_type),
+        content_type = (
+            "text/plain" if context.content_type is None else context.content_type
         )
+        self.channel.connection.add_callback_threadsafe(_publish)
 
     def _publish_process_completed(
         self,
@@ -109,20 +123,26 @@ class Executor:
         stderr: str,
         context: Context,
     ):
+        def _publish():
+            self.channel.basic_publish(
+                exchange=self.exchange_name,
+                routing_key=context.reply_to,
+                properties=BasicProperties(
+                    type=resp.type_name,
+                    content_encoding="utf8",
+                    content_type=content_type,
+                    correlation_id=context.correlation_id,
+                ),
+                body=resp.encode(encoding="utf8", content_type=content_type),
+            )
+
         resp = Completed(
             args=args,
             returncode=returncode,
-            stdout=stdout,  # truncate in event.encode if too long?
+            stdout=stdout,  # truncate in Completed.encode if too long?
             stderr=stderr,
         )
-        self.channel.basic_publish(
-            exchange=self.exchange_name,
-            routing_key=context.reply_to,
-            properties=BasicProperties(
-                type=resp.type_name,
-                content_encoding="utf8",
-                content_type=context.content_type,
-                correlation_id=context.correlation_id,
-            ),
-            body=resp.encode(encoding="utf8", content_type=context.content_type),
+        content_type = (
+            "text/plain" if context.content_type is None else context.content_type
         )
+        self.channel.connection.add_callback_threadsafe(_publish)

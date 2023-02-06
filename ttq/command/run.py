@@ -22,8 +22,10 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     logger.debug("Connecting to subscriber channel")
     sub = BlockingConnection(config.connection)
     sub_ch = sub.channel()
-    sub_ch.queue_declare(queue=config.subscribe_queue)
-    sub_ch.exchange_declare(exchange=config.subscribe_abort_exchange)
+
+    # don't do this here ? Or maybe add a config option ?
+    # sub_ch.queue_declare(queue=config.subscribe_queue)
+    # sub_ch.exchange_declare(exchange=config.subscribe_abort_exchange)
 
     logger.debug("Connecting to publisher channel")
     pub = BlockingConnection(config.connection)
@@ -57,25 +59,26 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     logger.debug("Binding subscriber channel consumers")
     listener.bind(sub_ch)
 
-    while not stop.is_set():
-        try:
-            sub.sleep(1.0)  # process events in 1-sec intervals
+    try:
+        while True if stop is None else not stop.is_set():
+            sub.sleep(0.1)
+            pub.sleep(0.1)
 
-        except KeyboardInterrupt:
-            logger.warning("Received CTRL+C, shutting down")
-            stop.set()
-            continue
+    except KeyboardInterrupt:
+        logger.warning("Received CTRL+C, shutting down")
 
-        except Exception as e:
-            logger.exception(e)
-            raise e
+    except Exception as e:
+        logger.exception(e)
+        # raise e
 
-        finally:
-            logger.debug("Shutting down executor")
-            executor.shutdown()
-            logger.debug("Stopping store")
-            store.stop()
-            logger.debug("Closing subscriber channel")
-            sub.close()
-            logger.debug("Closing publisher channel")
-            pub.close()
+    finally:
+        logger.debug("Shutting down executor")
+        executor.shutdown()
+        logger.debug("Stopping store")
+        store.stop()
+        """ let pika handle this
+        logger.debug("Closing subscriber channel")
+        sub.close()
+        logger.debug("Closing publisher channel")
+        pub.close()
+        """

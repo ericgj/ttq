@@ -9,7 +9,7 @@ try:
 except ImportError:
     install_requires.append("tomli")
 
-tests_require = ["pytest"]
+tests_require = ["pytest", "pytest-random-order"]
 
 setup(
     name="ttq",
