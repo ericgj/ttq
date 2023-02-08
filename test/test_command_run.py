@@ -154,16 +154,20 @@ class TestingConfig:
         return f"{self.name}-resp"
 
     @property
-    def abort_request_exchange(self) -> str:
+    def request_abort_exchange(self) -> str:
         return f"{self.name}-abort-req-x"
 
     @property
-    def abort_response_exchange(self) -> str:
+    def response_abort_exchange(self) -> str:
         return f"{self.name}-abort-resp-x"
 
     @property
-    def abort_response_queue(self) -> str:
+    def response_abort_queue(self) -> str:
         return f"{self.name}-abort-resp"
+
+    @property
+    def request_shutdown_queue(self) -> str:
+        return f"{self.name}-shutdown-req"
 
     @property
     def connection_parameters(self) -> ConnectionParameters:
@@ -173,8 +177,11 @@ class TestingConfig:
     def ttq(self) -> Config:
         return Config(
             connection=self.connection_parameters,
-            subscribe_queue=self.request_queue,
-            subscribe_abort_exchange=self.abort_request_exchange,
+            request_queue=self.request_queue,
+            request_abort_exchange=self.request_abort_exchange,
+            request_shutdown_queue=self.request_shutdown_queue,
+            response_exchange=self.response_exchange,
+            response_abort_exchange=self.response_abort_exchange,
             storage_file=os.path.join(self.temp_dir, "process_map"),
             prefetch_count=1,
         )
@@ -212,7 +219,7 @@ def run_script_and_evaluate(
     resp_q: "Queue[Response]" = Queue()
     relay = Relay(
         response_queue=config.response_queue,
-        abort_response_queue=config.abort_response_queue,
+        response_abort_queue=config.response_abort_queue,
         local_queue=resp_q,
     )
     relay.bind(resp_ch)
@@ -221,9 +228,9 @@ def run_script_and_evaluate(
         channel=request_ch,
         request_exchange=config.request_exchange,
         request_queue=config.request_queue,
-        abort_request_exchange=config.abort_request_exchange,
+        request_abort_exchange=config.request_abort_exchange,
         response_queue=config.response_queue,
-        abort_response_queue=config.abort_response_queue,
+        response_abort_queue=config.response_abort_queue,
     )
 
     stop = threading.Event()
@@ -301,8 +308,8 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
         ch.exchange_declare(config.request_exchange, auto_delete=True)
         ch.queue_bind(config.request_queue, config.request_exchange)
 
-    if not config.abort_request_exchange == "":
-        ch.exchange_declare(config.abort_request_exchange, auto_delete=True)
+    if not config.request_abort_exchange == "":
+        ch.exchange_declare(config.request_abort_exchange, auto_delete=True)
 
     return ch
 
@@ -312,15 +319,15 @@ def connect_and_bind_response_channel(config: TestingConfig) -> BlockingChannel:
     ch = c.channel()
 
     ch.queue_declare(config.response_queue, auto_delete=True)
-    ch.queue_declare(config.abort_response_queue, auto_delete=True)
+    ch.queue_declare(config.response_abort_queue, auto_delete=True)
 
     if not config.response_exchange == "":
         ch.exchange_declare(config.response_exchange, auto_delete=True)
         ch.queue_bind(config.response_queue, config.response_exchange)
 
-    if not config.abort_response_exchange == "":
-        ch.exchange_declare(config.abort_response_exchange, auto_delete=True)
-        ch.queue_bind(config.abort_response_queue, config.abort_response_exchange)
+    if not config.response_abort_exchange == "":
+        ch.exchange_declare(config.response_abort_exchange, auto_delete=True)
+        ch.queue_bind(config.response_abort_queue, config.response_abort_exchange)
 
     return ch
 
@@ -386,16 +393,16 @@ class Relay:
         self,
         *,
         response_queue: str,
-        abort_response_queue: str,
+        response_abort_queue: str,
         local_queue: "Queue[Response]",
     ):
         self.response_queue = response_queue
-        self.abort_response_queue = abort_response_queue
+        self.response_abort_queue = response_abort_queue
         self.local_queue = local_queue
 
     def bind(self, ch: BlockingChannel):
         ch.basic_consume(self.response_queue, self._handle)
-        ch.basic_consume(self.abort_response_queue, self._handle_abort)
+        ch.basic_consume(self.response_abort_queue, self._handle_abort)
 
     def _handle(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
@@ -423,16 +430,16 @@ class ScriptPublisher:
         *,
         request_exchange: str,
         request_queue: str,
-        abort_request_exchange: str,
+        request_abort_exchange: str,
         response_queue: str,
-        abort_response_queue: str,
+        response_abort_queue: str,
     ):
         self.channel = channel
         self.request_exchange = request_exchange
         self.request_queue = request_queue
-        self.abort_request_exchange = abort_request_exchange
+        self.request_abort_exchange = request_abort_exchange
         self.response_queue = response_queue
-        self.abort_response_queue = abort_response_queue
+        self.response_abort_queue = response_abort_queue
 
     def send(self, event: EventProtocol) -> str:
         corr_id = str(uuid4())
@@ -459,16 +466,16 @@ class ScriptPublisher:
     def abort(self, routing_key: str):
         corr_id = str(uuid4())
         logger.debug(
-            f"Publishing abort to {self.abort_request_exchange}, "
+            f"Publishing abort to {self.request_abort_exchange}, "
             f"routing_key: {routing_key}, "
-            f"reply_to: {self.abort_response_queue}, "
+            f"reply_to: {self.response_abort_queue}, "
             f"correlation_id: {corr_id}"
         )
         self.channel.basic_publish(
-            exchange=self.abort_request_exchange,
+            exchange=self.request_abort_exchange,
             routing_key=routing_key,
             properties=BasicProperties(
-                reply_to=self.abort_response_queue,
+                reply_to=self.response_abort_queue,
                 correlation_id=corr_id,
                 content_type="text/plain",
             ),

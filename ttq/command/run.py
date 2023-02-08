@@ -24,8 +24,8 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     sub_ch = sub.channel()
 
     # don't do this here ? Or maybe add a config option ?
-    # sub_ch.queue_declare(queue=config.subscribe_queue)
-    # sub_ch.exchange_declare(exchange=config.subscribe_abort_exchange)
+    # sub_ch.queue_declare(queue=config.request_queue)
+    # sub_ch.exchange_declare(exchange=config.request_abort_exchange)
 
     logger.debug("Connecting to publisher channel")
     pub = BlockingConnection(config.connection)
@@ -37,8 +37,8 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
 
     executor = Executor(
         channel=pub_ch,
-        exchange_name=config.publish_exchange,
-        abort_exchange_name=config.publish_abort_exchange,
+        exchange_name=config.response_exchange,
+        abort_exchange_name=config.response_abort_exchange,
         max_workers=config.max_workers,
     )
 
@@ -49,8 +49,8 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     sub_ch.basic_qos(prefetch_count=prefetch_count)
 
     listener = Listener(
-        queue_name=config.subscribe_queue,
-        abort_exchange_name=config.subscribe_abort_exchange,
+        queue_name=config.request_queue,
+        abort_exchange_name=config.request_abort_exchange,
         events=events,
         to_command=to_command,
         store=store,
