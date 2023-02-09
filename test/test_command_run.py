@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 from pika.connection import ConnectionParameters
 from pika.adapters.blocking_connection import BlockingConnection, BlockingChannel
 from pika.spec import Basic, BasicProperties
+from pika.exchange_type import ExchangeType
+
+# import pytest  # type: ignore
 
 from ttq.command.run import run
 from ttq.model.config import Config
@@ -63,7 +66,7 @@ def test_run_success(caplog):
     caplog.set_level(logging.DEBUG, logger=__name__)
 
     dur = 2
-    script = send(SleepEvent(dur))
+    script = send(SleepEvent(dur)).and_wait(1)
 
     expected: List[Expect[Response]] = [
         that(is_accepted_response) & ~that(is_aborted_response),
@@ -88,25 +91,29 @@ def test_run_success(caplog):
     )
 
 
+# @pytest.mark.skip()
 def test_run_and_abort_success(caplog):
-    """
-    Note this *usually* passes. But sometimes the 3rd and 4th response
-    come back in reverse order from expected.
-    """
-
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
     dur = 3
-    script = send(SleepEvent(dur)).and_wait(1).and_abort(-1)
+    script = send(SleepEvent(dur)).and_wait(1).and_abort(-1).and_wait(1)
 
-    expected: List[Expect[Response]] = [
-        that(is_accepted_response) & ~that(is_aborted_response),
-        that(is_accepted_response) & that(is_aborted_response),
+    that_sleep_accepted = that(is_accepted_response) & ~that(is_aborted_response)
+    that_sleep_failed = (
         that(is_completed_response)
         & ~that(is_aborted_response)
-        & that(is_error_response),
-        that(is_completed_response) & that(is_aborted_response),
+        & that(is_error_response)
+    )
+    that_abort_accepted = that(is_accepted_response) & that(is_aborted_response)
+    that_abort_completed = that(is_completed_response) & that(is_aborted_response)
+
+    # Note: completed responses can come back in either order.
+    expected: List[Expect[Response]] = [
+        that_sleep_accepted,
+        that_abort_accepted,
+        that_sleep_failed | that_abort_completed,
+        that_sleep_failed | that_abort_completed,
     ]
 
     config = TestingConfig(
@@ -121,7 +128,7 @@ def test_run_and_abort_success(caplog):
         script=script,
         expected=expected,
         app=app,
-        stop_after=dur + 1,
+        stop_after=dur + 2,
     )
 
 
@@ -166,8 +173,8 @@ class TestingConfig:
         return f"{self.name}-abort-resp"
 
     @property
-    def request_shutdown_queue(self) -> str:
-        return f"{self.name}-shutdown-req"
+    def request_shutdown_exchange(self) -> str:
+        return f"{self.name}-shutdown-req-x"
 
     @property
     def connection_parameters(self) -> ConnectionParameters:
@@ -179,11 +186,12 @@ class TestingConfig:
             connection=self.connection_parameters,
             request_queue=self.request_queue,
             request_abort_exchange=self.request_abort_exchange,
-            request_shutdown_queue=self.request_shutdown_queue,
+            request_shutdown_exchange=self.request_shutdown_exchange,
             response_exchange=self.response_exchange,
             response_abort_exchange=self.response_abort_exchange,
             storage_file=os.path.join(self.temp_dir, "process_map"),
             prefetch_count=1,
+            max_workers=2,
         )
 
 
@@ -231,6 +239,7 @@ def run_script_and_evaluate(
         request_abort_exchange=config.request_abort_exchange,
         response_queue=config.response_queue,
         response_abort_queue=config.response_abort_queue,
+        request_shutdown_exchange=config.request_shutdown_exchange,
     )
 
     stop = threading.Event()
@@ -240,7 +249,6 @@ def run_script_and_evaluate(
         name="ttq",
         config=config.ttq,
         app=app,
-        stop=stop,
     )
     script_th = run_script_in_thread(
         name="script",
@@ -311,6 +319,12 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
     if not config.request_abort_exchange == "":
         ch.exchange_declare(config.request_abort_exchange, auto_delete=True)
 
+    ch.exchange_declare(
+        config.request_shutdown_exchange,
+        exchange_type=ExchangeType.fanout,
+        auto_delete=True,
+    )
+
     return ch
 
 
@@ -340,7 +354,6 @@ def run_ttq_in_thread(
     name: str,
     config: Config,
     app: EventMapping,
-    stop: threading.Event,
 ):
     return threading.Thread(
         name=name,
@@ -348,7 +361,6 @@ def run_ttq_in_thread(
         kwargs={
             "config": config,
             "app": app,
-            "stop": stop,
         },
     )
 
@@ -431,6 +443,7 @@ class ScriptPublisher:
         request_exchange: str,
         request_queue: str,
         request_abort_exchange: str,
+        request_shutdown_exchange: str,
         response_queue: str,
         response_abort_queue: str,
     ):
@@ -438,6 +451,7 @@ class ScriptPublisher:
         self.request_exchange = request_exchange
         self.request_queue = request_queue
         self.request_abort_exchange = request_abort_exchange
+        self.request_shutdown_exchange = request_shutdown_exchange
         self.response_queue = response_queue
         self.response_abort_queue = response_abort_queue
 
@@ -479,5 +493,13 @@ class ScriptPublisher:
                 correlation_id=corr_id,
                 content_type="text/plain",
             ),
+            body=b"",
+        )
+
+    def finish(self, keys: List[str]):
+        logger.debug(f"Publishing shutdown to {self.request_shutdown_exchange}")
+        self.channel.basic_publish(
+            exchange=self.request_shutdown_exchange,
+            routing_key="",
             body=b"",
         )

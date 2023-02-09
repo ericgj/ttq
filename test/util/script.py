@@ -29,6 +29,9 @@ class ScriptHandlerProtocol(Protocol):
     def abort(self, routing_key: str):
         ...
 
+    def finish(self, keys: List[str]) -> str:
+        ...
+
 
 class Script:
     def __init__(self, steps: List[Step] = []):
@@ -64,6 +67,12 @@ class Script:
             else:
                 raise ValueError(f"Unknown step type {type(step)}")
 
+        handler.finish(results)
+
 
 def send(event: EventProtocol) -> Script:
     return Script([EventStep(event)])
+
+
+def wait(secs: float) -> Script:
+    return Script([WaitStep(secs)])

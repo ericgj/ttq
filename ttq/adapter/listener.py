@@ -1,5 +1,6 @@
 from concurrent.futures import Future
 import logging
+import threading
 from typing import Iterable, Type, Tuple
 
 logger = logging.getLogger(__name__)
@@ -270,3 +271,55 @@ def get_context(
         user_id=properties.user_id,
         app_id=properties.app_id,
     )
+
+
+class Shutdown:
+    """
+    Receive shutdown messages, shut down resources gracefully and set a stop
+    event for the main thread to finish shutdown.
+    Note: this handler could be merged into the Listener above, but for clarity
+    it's split out here.
+    """
+
+    def __init__(
+        self,
+        exchange_name: str,
+        executor: Executor,
+        store: Store,
+        stop: threading.Event,
+    ):
+        self.exchange_name = exchange_name
+        self.executor = executor
+        self.store = store
+        self.stop = stop
+
+    def bind(self, channel: BlockingChannel):
+        logger.debug("Declare transient shutdown queue")
+        r = channel.queue_declare(queue="", exclusive=True)
+        queue_name = r.method.queue
+
+        logger.debug(
+            f"Bind transient shutdown queue {queue_name} to exchange {self.exchange_name}"
+        )
+        channel.queue_bind(
+            exchange=self.exchange_name,
+            queue=queue_name,
+        )
+
+        logger.debug(f"Bind message handling on transient shutdown queue {queue_name}")
+        channel.basic_consume(queue=queue_name, on_message_callback=self._handle)
+
+    def _handle(
+        self,
+        channel: BlockingChannel,
+        m: Basic.Deliver,
+        p: BasicProperties,
+        body: bytes,
+    ):
+        logger.debug("Shutting down executor, cancelling pending jobs")
+        self.executor.shutdown()
+
+        logger.debug("Stopping store")
+        self.store.stop()
+
+        self.stop.set()

@@ -1,10 +1,9 @@
 import logging
-from threading import Event
-from typing import Optional
+import threading
 
 from pika.adapters.blocking_connection import BlockingConnection
 
-from ..adapter.listener import Listener
+from ..adapter.listener import Listener, Shutdown
 from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
 from ..model.config import Config
@@ -14,7 +13,17 @@ from ..util.mapping import compile_type_map
 logger = logging.getLogger(__name__)
 
 
-def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None):
+def run(config: Config, app: command.EventMapping):
+    def _send_shutdown_message():
+        pub_ch.basic_publish(
+            config.request_shutdown_exchange,
+            routing_key="",
+            body=b"",
+        )
+
+    def _exit_handler():
+        logger.warning("Interrupt: sending shutdown message")
+        pub_ch.add_callback_threadsafe(_send_shutdown_message)
 
     to_command = compile_type_map(app)
     events = [k for k in app]
@@ -59,26 +68,33 @@ def run(config: Config, app: command.EventMapping, stop: Optional[Event] = None)
     logger.debug("Binding subscriber channel consumers")
     listener.bind(sub_ch)
 
+    shutdown_event = threading.Event()
+    shutdown = Shutdown(
+        exchange_name=config.request_shutdown_exchange,
+        executor=executor,
+        store=store,
+        stop=shutdown_event,
+    )
+    shutdown.bind(sub_ch)
+
+    sub_th = threading.Thread(name="ttq-subscriber", target=sub_ch.start_consuming)
+    sub_th.start()
+
     try:
-        while True if stop is None else not stop.is_set():
-            sub.sleep(0.1)
+        while not shutdown_event.is_set():
             pub.sleep(0.1)
 
     except KeyboardInterrupt:
-        logger.warning("Received CTRL+C, shutting down")
+        _exit_handler()
 
     except Exception as e:
         logger.exception(e)
-        # raise e
+        raise e
 
     finally:
-        logger.debug("Shutting down executor")
-        executor.shutdown()
-        logger.debug("Stopping store")
-        store.stop()
-        """ let pika handle this
-        logger.debug("Closing subscriber channel")
-        sub.close()
-        logger.debug("Closing publisher channel")
-        pub.close()
-        """
+        logger.debug("Waiting for publisher channel events to finish")
+        pub.process_data_events()
+
+        logger.debug("Waiting for subscriber channel consumers to stop")
+        sub.add_callback_threadsafe(sub_ch.stop_consuming)
+        sub_th.join()

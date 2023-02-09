@@ -10,7 +10,7 @@ class Config:
     storage_file: str
     request_queue: str
     request_abort_exchange: str
-    request_shutdown_queue: str
+    request_shutdown_exchange: str
     response_exchange: str = ""
     response_abort_exchange: str = ""
     prefetch_count: Optional[int] = None

@@ -37,7 +37,7 @@ class Executor:
         return f
 
     def shutdown(self):
-        self._executor.shutdown()
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def _exec(
         self, command: Command, context: Context, store: Store
