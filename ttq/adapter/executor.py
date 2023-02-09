@@ -51,34 +51,44 @@ class Executor:
             encoding=command.encoding,
             text=True,
         ) as p:
-            logger.debug(f"Starting process {command.name}")
+            ctx = context.to_dict()
+            logger.debug(f"Starting process {command.name}", ctx)
             pid = p.pid
 
             logger.debug(
-                f"Storing process {command.name} started for correlation_id {context.correlation_id}"
+                f"Storing process {command.name} started "
+                f"for correlation_id {context.correlation_id}",
+                ctx,
             )
             store.queue.put(Put(context.correlation_id, pid))
 
             logger.debug(
-                f"Publishing process {command.name} started to {context.reply_to}"
+                f"Publishing process {command.name} started to {context.reply_to}", ctx
             )
             self._publish_process_started(context)
 
+            logger.info(
+                f"Running process {command.name} "
+                f"for correlation_id {context.correlation_id}",
+                ctx,
+            )
             try:
-                logger.debug(f"Running process {command.name}")
                 out, err = p.communicate(timeout=command.timeout)
 
             except TimeoutExpired:
                 logger.warning(
-                    f"Process {command.name} timeout expired at after {command.timeout} secs, killing"
+                    f"Process {command.name} timeout expired "
+                    f"after {command.timeout} secs, killing",
+                    ctx,
                 )
                 p.kill()
-                logger.debug(f"Finishing process {command.name}")
+                logger.debug(f"Finishing process {command.name}", ctx)
                 out, err = p.communicate()
 
             finally:
                 logger.debug(
-                    f"Publishing process {command.name} completed to {context.reply_to}"
+                    f"Publishing process {command.name} completed to {context.reply_to}",
+                    ctx,
                 )
                 self._publish_process_completed(
                     args=p.args,
@@ -88,7 +98,9 @@ class Executor:
                     context=context,
                 )
                 logger.debug(
-                    f"Storing process {command.name} completed for correlation_id {context.correlation_id}"
+                    f"Storing process {command.name} completed "
+                    f"for correlation_id {context.correlation_id}",
+                    ctx,
                 )
                 store.queue.put(Delete(context.correlation_id))
 

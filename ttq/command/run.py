@@ -77,9 +77,11 @@ def run(config: Config, app: command.EventMapping):
     )
     shutdown.bind(sub_ch)
 
+    logger.info("Starting to consume messages on subscriber thread")
     sub_th = threading.Thread(name="ttq-subscriber", target=sub_ch.start_consuming)
     sub_th.start()
 
+    logger.info("Starting publisher loop")
     try:
         while not shutdown_event.is_set():
             pub.sleep(0.1)
@@ -98,3 +100,5 @@ def run(config: Config, app: command.EventMapping):
         logger.debug("Waiting for subscriber channel consumers to stop")
         sub.add_callback_threadsafe(sub_ch.stop_consuming)
         sub_th.join()
+
+        logger.info("Stopped.")

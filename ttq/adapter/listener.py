@@ -103,7 +103,7 @@ class Listener:
         ctx = context.to_dict()
 
         try:
-            logger.debug(
+            logger.info(
                 f"Handling message correlation_id = {context.correlation_id}", ctx
             )
             event = self._decode(body, channel=ch, context=context)
@@ -117,7 +117,7 @@ class Listener:
             if isinstance(e, Warning):
                 ch.connection.add_callback_threadsafe(_ack)
                 logging.info(
-                    "Warning submitting command from message correlation_id = "
+                    "Warning submitting command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
@@ -125,7 +125,7 @@ class Listener:
             else:
                 ch.connection.add_callback_threadsafe(_nack)
                 logging.info(
-                    "Error submitting command from message correlation_id = "
+                    "Error submitting command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
@@ -152,7 +152,7 @@ class Listener:
             if isinstance(e, Warning):
                 ch.connection.add_callback_threadsafe(_ack)
                 logger.info(
-                    "Warning submitting abort command from message correlation_id = "
+                    "Warning submitting abort command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
@@ -160,7 +160,7 @@ class Listener:
             else:
                 ch.connection.add_callback_threadsafe(_nack)
                 logger.info(
-                    "Error submitting abort command from message correlation_id = "
+                    "Error submitting abort command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
@@ -222,7 +222,11 @@ class Listener:
 
         ctx = context.to_dict()
 
-        logger.debug(f"Submitting command {command.name}", ctx)
+        logger.info(
+            f"Submitting command {command.name} "
+            f"for correlation_id = {context.correlation_id}",
+            ctx,
+        )
         f = self.executor.submit(  # run command in thread + subprocess
             command=command, context=context, store=self.store
         )
