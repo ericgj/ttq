@@ -53,7 +53,7 @@ class Listener:
             f"Declare transient abort queue for correlation_id {context.correlation_id}",
             ctx,
         )
-        r = channel.queue_declare(queue="", exclusive=True)
+        r = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
         abort_queue_name = r.method.queue
 
         logger.debug(
@@ -307,7 +307,7 @@ class Shutdown:
 
     def bind(self, channel: BlockingChannel):
         logger.debug("Declare transient shutdown queue")
-        r = channel.queue_declare(queue="", exclusive=True)
+        r = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
         queue_name = r.method.queue
 
         logger.debug(
