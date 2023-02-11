@@ -2,6 +2,7 @@ import logging
 import threading
 
 from pika.adapters.blocking_connection import BlockingConnection
+from pika.spec import BasicProperties
 
 from ..adapter.listener import Listener, Shutdown
 from ..adapter.executor import Executor
@@ -14,16 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def run(config: Config, app: command.EventMapping):
-    def _send_shutdown_message():
+    def _exit_handler():
+        logger.warning("Interrupt: sending shutdown message")
         pub_ch.basic_publish(
             config.request_shutdown_exchange,
             routing_key="",
             body=b"",
+            properties=BasicProperties(
+                delivery_mode=2,
+            ),
         )
-
-    def _exit_handler():
-        logger.warning("Interrupt: sending shutdown message")
-        pub_ch.add_callback_threadsafe(_send_shutdown_message)
 
     to_command = compile_type_map(app)
     events = [k for k in app]
@@ -39,13 +40,14 @@ def run(config: Config, app: command.EventMapping):
     logger.debug("Connecting to publisher channel")
     pub = BlockingConnection(config.connection)
     pub_ch = pub.channel()
+    pub_ch.confirm_delivery()
 
     logger.debug("Starting process map store")
     store = Store(config.storage_file, ProcessMap, thread_name="ProcessMap")
     store.start()
 
     executor = Executor(
-        channel=pub_ch,
+        connection_parameters=config.connection,
         exchange_name=config.response_exchange,
         abort_exchange_name=config.response_abort_exchange,
         max_workers=config.max_workers,
@@ -91,7 +93,7 @@ def run(config: Config, app: command.EventMapping):
 
     except Exception as e:
         logger.exception(e)
-        raise e
+        _exit_handler()
 
     finally:
         logger.debug("Waiting for publisher channel events to finish")

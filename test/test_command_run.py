@@ -4,7 +4,7 @@ import os
 from queue import Queue
 import shutil
 import threading
-from typing import List, Optional
+from typing import List, Optional, Callable
 from uuid import uuid4
 
 OUTPUT_DIR = os.path.join("test", "output", "test_command_run")
@@ -28,7 +28,7 @@ from ttq.model.config import Config
 from ttq.model.event import EventProtocol
 from ttq.model.command import Command, EventMapping
 
-from util.script import Script, ScriptHandlerProtocol, send
+from util.script import Script, ScriptHandlerProtocol, wait  # , send
 from util.expect import Expect, that, evaluate
 from util.queue import queue_iterator
 
@@ -61,12 +61,13 @@ def output_dir(test_name: str):
     return os.path.join(OUTPUT_DIR, test_name)
 
 
+# @pytest.mark.skip()
 def test_run_success(caplog):
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
     dur = 2
-    script = send(SleepEvent(dur)).and_wait(1)
+    script = wait(0.5).and_send(SleepEvent(dur)).and_wait(1)
 
     expected: List[Expect[Response]] = [
         that(is_accepted_response) & ~that(is_aborted_response),
@@ -86,8 +87,9 @@ def test_run_success(caplog):
         config=config,
         script=script,
         expected=expected,
+        check=check_has_accepted_completed_pairs,
         app=app,
-        stop_after=dur + 1,
+        stop_after=dur + 2,
     )
 
 
@@ -97,7 +99,7 @@ def test_run_and_abort_success(caplog):
     caplog.set_level(logging.DEBUG, logger=__name__)
 
     dur = 3
-    script = send(SleepEvent(dur)).and_wait(1).and_abort(-1).and_wait(1)
+    script = wait(0.5).and_send(SleepEvent(dur)).and_wait(1).and_abort(-1).and_wait(1)
 
     that_sleep_accepted = that(is_accepted_response) & ~that(is_aborted_response)
     that_sleep_failed = (
@@ -127,8 +129,45 @@ def test_run_and_abort_success(caplog):
         config=config,
         script=script,
         expected=expected,
+        check=check_has_accepted_completed_pairs,
         app=app,
-        stop_after=dur + 2,
+        stop_after=dur + 3,
+    )
+
+
+# @pytest.mark.skip()
+def test_run_many_success(caplog):
+    caplog.set_level(logging.DEBUG, logger="ttq")
+    caplog.set_level(logging.DEBUG, logger=__name__)
+
+    dur = 2
+    times = 10
+    every = 0.5
+    script = (
+        wait(0.5)
+        .and_send_repeatedly(lambda i: SleepEvent(dur), times, every)
+        .and_wait(1)
+    )
+
+    expected: List[Expect[Response]] = [
+        ~that(is_error_response)
+        & (that(is_accepted_response) | that(is_completed_response)),
+    ] * 20
+
+    config = TestingConfig(
+        name="test_command_run",
+        temp_dir=output_dir("test_run_many_success"),
+    )
+
+    app = {SleepEvent: SleepCommand()}
+
+    run_script_and_evaluate(
+        config=config,
+        script=script,
+        expected=expected,
+        check=check_has_accepted_completed_pairs,
+        app=app,
+        stop_after=(times * (dur + every)) + 2,
     )
 
 
@@ -191,7 +230,7 @@ class TestingConfig:
             response_abort_exchange=self.response_abort_exchange,
             storage_file=os.path.join(self.temp_dir, "process_map"),
             prefetch_count=1,
-            max_workers=2,
+            max_workers=10,
         )
 
 
@@ -218,6 +257,7 @@ def run_script_and_evaluate(
     expected: List[Expect[Response]],
     app: EventMapping,
     stop_after: float,
+    check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ):
     logger.debug("connect and bind request channel")
     request_ch = connect_and_bind_request_channel(config)
@@ -266,7 +306,7 @@ def run_script_and_evaluate(
 
     logger.debug("listening for responses")
     while not stop.is_set():
-        resp_ch.connection.sleep(0.1)
+        resp_ch.connection.sleep(1)
 
     logger.debug("timer set, joining script thread")
     script_th.join()
@@ -274,7 +314,7 @@ def run_script_and_evaluate(
     logger.debug("timer set, joining ttq thread")
     ttq_th.join()
 
-    evaluate(expected, queue_iterator(resp_q))
+    evaluate(expected, queue_iterator(resp_q), check_all=check)
 
 
 def is_accepted_response(r: Response) -> bool:
@@ -303,6 +343,46 @@ def is_error_response(r: Response) -> bool:
     return False
 
 
+def check_has_accepted_completed_pairs(rs: List[Response]) -> Optional[str]:
+    accepted_ids = set(
+        [
+            r.properties.correlation_id
+            for r in rs
+            if is_accepted_response(r) and r.properties.correlation_id is not None
+        ]
+    )
+    completed_ids = set(
+        [
+            r.properties.correlation_id
+            for r in rs
+            if is_completed_response(r) and r.properties.correlation_id is not None
+        ]
+    )
+    not_completed = accepted_ids - completed_ids
+    not_accepted = completed_ids - accepted_ids
+    if len(not_completed) == 0 and len(not_accepted) == 0:
+        return None
+    else:
+        return ". ".join(
+            (
+                []
+                if len(not_completed) == 0
+                else [
+                    "No completed responses for the following correlation_ids: "
+                    + ", ".join(list(not_completed))
+                ]
+            )
+            + (
+                []
+                if len(not_accepted) == 0
+                else [
+                    "No accepted responses for the following correlation_ids: "
+                    + ", ".join(list(not_accepted))
+                ]
+            )
+        )
+
+
 def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
     c = connect(config)
     ch = c.channel()
@@ -310,7 +390,8 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
     # Note: abort request exchange bound on the fly to transient queues, so
     # not bound here.
 
-    ch.queue_declare(config.request_queue, auto_delete=True)
+    args = {"x-message-ttl": 1000}
+    ch.queue_declare(config.request_queue, auto_delete=True, arguments=args)
 
     if not config.request_exchange == "":
         ch.exchange_declare(config.request_exchange, auto_delete=True)
@@ -332,8 +413,9 @@ def connect_and_bind_response_channel(config: TestingConfig) -> BlockingChannel:
     c = connect(config)
     ch = c.channel()
 
-    ch.queue_declare(config.response_queue, auto_delete=True)
-    ch.queue_declare(config.response_abort_queue, auto_delete=True)
+    args = {"x-message-ttl": 1000}
+    ch.queue_declare(config.response_queue, auto_delete=True, arguments=args)
+    ch.queue_declare(config.response_abort_queue, auto_delete=True, arguments=args)
 
     if not config.response_exchange == "":
         ch.exchange_declare(config.response_exchange, auto_delete=True)

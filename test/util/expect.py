@@ -48,11 +48,13 @@ class EvaluationError(Exception, Generic[R]):
         faileds: List[Tuple[int, Expect[R], R]],
         unexpecteds: List[Tuple[int, R]],
         missings: List[Tuple[int, Expect[R]]],
+        check_msg: Optional[str],
     ):
         self.actuals = actuals
         self.faileds = faileds
         self.unexpecteds = unexpecteds
         self.missings = missings
+        self.check_msg = check_msg
 
     @property
     def summary(self) -> str:
@@ -60,12 +62,19 @@ class EvaluationError(Exception, Generic[R]):
             len(self.faileds) == 0
             and len(self.unexpecteds) == 0
             and len(self.missings) == 0
+            and self.check_msg is None
         ):
-            return "EvaluationError: no errors"  # Note: should not reach this
-        return (
-            f"EvaluationError: {len(self.faileds)} results failed expectations, "
-            f"{len(self.unexpecteds)} results were unexpected, "
-            f"and {len(self.missings)} expectations were not met with any results. "
+            return "EvaluationError: no error"  # should never reach
+        elif self.check_msg is not None:
+            return f"EvaluationError: {self.check_msg}"
+
+        return " ".join(
+            [
+                f"EvaluationError: {len(self.faileds)} results failed expectations,",
+                f"{len(self.unexpecteds)} results were unexpected,",
+                f"{len(self.missings)} expectations were not met with any results.",
+            ]
+            + ([] if self.check_msg is None else "And: {self.check_msg}")
         )
 
     @property
@@ -146,18 +155,25 @@ class Evaluation(Generic[R]):
             missings=self._missings + other._missings,
         )
 
-    @property
-    def result(self) -> Optional[EvaluationError]:
+    def result(
+        self, check_all: Optional[Callable[[List[R]], Optional[str]]] = None
+    ) -> Optional[EvaluationError]:
         failed = [(i, e, a) for (i, e, a) in self._evals if not e(a)]
+        actuals = [a for (i, e, a) in self._evals] + [a for (i, a) in self._unexpecteds]
+        check_msg = None if check_all is None else check_all(actuals)
         if (
             len(failed) == 0
             and len(self._unexpecteds) == 0
             and len(self._missings) == 0
+            and check_msg is None
         ):
             return None
-        actuals = [a for (i, e, a) in self._evals] + [a for (i, a) in self._unexpecteds]
         return EvaluationError(
-            actuals, failed, unexpecteds=self._unexpecteds, missings=self._missings
+            actuals,
+            failed,
+            unexpecteds=self._unexpecteds,
+            missings=self._missings,
+            check_msg=check_msg,
         )
 
 
@@ -190,8 +206,12 @@ def build_evaluation(
     return eval
 
 
-def evaluate(expects: Iterable[Expect[R]], actuals: Iterable[R]):
+def evaluate(
+    expects: Iterable[Expect[R]],
+    actuals: Iterable[R],
+    check_all: Optional[Callable[[List[R]], Optional[str]]] = None,
+):
     e = build_evaluation(expects, actuals)
-    r = e.result
+    r = e.result(check_all)
     if r is not None:
         raise r

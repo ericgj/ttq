@@ -18,6 +18,12 @@ from ..model.command import Command, FromEvent
 
 
 class Listener:
+    # Note that as currently implemented, messages are consumed in a separate
+    # thread. But this is the *only* thread where queue operations happen, so
+    # it's probably OK to ack, nack, etc. synchronously here rather than
+    # schedule them for the main thread with `add_callback_threadsafe`. But
+    # this needs more testing.
+
     def __init__(
         self,
         *,
@@ -78,10 +84,8 @@ class Listener:
         consumer_tag: str,
         queue_name: str,
     ):
-        """
-        Note: unbinding and deleting queue not needed, transient queue takes care of itself
-        Also note this is run from an executor thread, hence the threadsafe operation
-        """
+        # Note: unbinding and deleting queue not needed, transient queue takes care of itself
+        # Also note this is run from an executor thread, hence the threadsafe operation
 
         def _unbind():
             channel.basic_cancel(consumer_tag)
@@ -94,9 +98,13 @@ class Listener:
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
         def _ack():
+            logger.debug(f"ACK message correlation_id = {context.correlation_id}", ctx)
             ch.basic_ack(delivery_tag=m.delivery_tag)
 
         def _nack():
+            logger.warning(
+                f"NACK message correlation_id = {context.correlation_id}", ctx
+            )
             ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
 
         context = get_context(m, p, body)
@@ -116,20 +124,20 @@ class Listener:
         except Exception as e:
             if isinstance(e, Warning):
                 ch.connection.add_callback_threadsafe(_ack)
-                logging.info(
+                logger.info(
                     "Warning submitting command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
-                logging.warning(e, ctx)
+                logger.warning(e, ctx)
             else:
                 ch.connection.add_callback_threadsafe(_nack)
-                logging.info(
+                logger.info(
                     "Error submitting command for correlation_id = "
                     f"{context.correlation_id}",
                     ctx,
                 )
-                logging.exception(e, ctx)
+                logger.exception(e, ctx)
 
     def _handle_abort(
         self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes
@@ -220,8 +228,9 @@ class Listener:
                     )
                     logger.exception(e, ctx)
 
-        ctx = context.to_dict()
+        abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
 
+        ctx = context.to_dict()
         logger.info(
             f"Submitting command {command.name} "
             f"for correlation_id = {context.correlation_id}",
@@ -231,7 +240,6 @@ class Listener:
             command=command, context=context, store=self.store
         )
         f.add_done_callback(_handle_result)
-        abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
 
     def _decode(self, body: bytes, channel: Channel, context: Context) -> EventProtocol:
         try:

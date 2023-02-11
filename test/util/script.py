@@ -1,5 +1,6 @@
+from functools import reduce
 from time import sleep
-from typing import Iterator, List, Protocol, Union
+from typing import Iterator, Callable, Protocol, Union, List
 
 from ttq.model.event import EventProtocol
 
@@ -43,6 +44,20 @@ class Script:
     def and_send(self, event: EventProtocol) -> "Script":
         return Script(self._steps + [EventStep(event)])
 
+    def and_send_repeatedly(
+        self,
+        event_func: Callable[[int], EventProtocol],
+        times: int,
+        every: float = 1.0,
+    ):
+        def _accum(script: "Script", i: int) -> "Script":
+            if i == 0:
+                return script.and_send(event_func(i))
+            else:
+                return script.and_wait(every).and_send(event_func(i))
+
+        return reduce(_accum, range(times), self)
+
     def and_wait(self, secs: float) -> "Script":
         return Script(self._steps + [WaitStep(secs)])
 
@@ -72,6 +87,22 @@ class Script:
 
 def send(event: EventProtocol) -> Script:
     return Script([EventStep(event)])
+
+
+def send_repeatedly(
+    event_func: Callable[[int], EventProtocol],
+    times: int,
+    every: float = 1.0,
+):
+    def _accum(steps: List[Step], i) -> List[Step]:
+        event_step = EventStep(event_func(i))
+        if i > 0:
+            steps.append(WaitStep(every))
+        steps.append(event_step)
+        return steps
+
+    empty_steps: List[Step] = []
+    return Script(reduce(_accum, range(times), empty_steps))
 
 
 def wait(secs: float) -> Script:

@@ -3,30 +3,39 @@ import logging
 from subprocess import Popen, TimeoutExpired, PIPE
 from typing import Optional, List, Tuple
 
-from pika.adapters.blocking_connection import BlockingChannel
+logger = logging.getLogger(__name__)
+
+from pika.adapters.blocking_connection import BlockingConnection, BlockingChannel
+from pika.connection import ConnectionParameters
 from pika.spec import BasicProperties
+from pika_pool import QueuedPool
 
 from ..adapter.store import Store, Put, Delete
 from ..model.command import Command
 from ..model.message import Context
 from ..model.response import Accepted, Completed
 
-logger = logging.getLogger(__name__)
-
 
 class Executor:
+    # Note: creates a pool of *connections*, not channels off the same
+    # connection, because pika connections are not threadsafe.
+    # This can be expensive if you have many threads going.
+
     def __init__(
         self,
         *,
-        channel: BlockingChannel,
+        connection_parameters: ConnectionParameters,
         exchange_name: str,
         abort_exchange_name: str,
         max_workers: Optional[int] = None,
     ):
-        self.channel = channel
         self.exchange_name = exchange_name
         self.abort_exchange_name = abort_exchange_name
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._channel_pool = QueuedPool(
+            lambda: BlockingConnection(connection_parameters),
+            max_size=self._executor._max_workers,
+        )
 
     @property
     def max_workers(self) -> int:
@@ -41,6 +50,17 @@ class Executor:
 
     def _exec(
         self, command: Command, context: Context, store: Store
+    ) -> Tuple[Command, int]:
+        with self._channel_pool.acquire() as conn:
+            channel = conn.channel
+            if (
+                not channel._delivery_confirmation
+            ):  # note: pika doesn't officially expose this
+                channel.confirm_delivery()
+            return self._exec_with_channel(command, context, store, channel)
+
+    def _exec_with_channel(
+        self, command: Command, context: Context, store: Store, channel: BlockingChannel
     ) -> Tuple[Command, int]:
         with Popen(
             command.args,
@@ -65,7 +85,7 @@ class Executor:
             logger.debug(
                 f"Publishing process {command.name} started to {context.reply_to}", ctx
             )
-            self._publish_process_started(context)
+            self._publish_process_started(channel, context)
 
             logger.info(
                 f"Running process {command.name} "
@@ -91,6 +111,7 @@ class Executor:
                     ctx,
                 )
                 self._publish_process_completed(
+                    channel=channel,
                     args=p.args,
                     returncode=p.returncode,
                     stdout=out,
@@ -106,28 +127,27 @@ class Executor:
 
             return (command, p.returncode)
 
-    def _publish_process_started(self, context: Context):
-        def _publish():
-            self.channel.basic_publish(
-                exchange=self.exchange_name,
-                routing_key=context.reply_to,
-                properties=BasicProperties(
-                    type=resp.type_name,
-                    content_encoding="utf8",
-                    content_type=content_type,
-                    correlation_id=context.correlation_id,
-                ),
-                body=resp.encode(encoding="utf8", content_type=content_type),
-            )
-
+    def _publish_process_started(self, channel: BlockingChannel, context: Context):
         resp = Accepted()
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )
-        self.channel.connection.add_callback_threadsafe(_publish)
+        channel.basic_publish(
+            exchange=self.exchange_name,
+            routing_key=context.reply_to,
+            properties=BasicProperties(
+                type=resp.type_name,
+                content_encoding="utf8",
+                content_type=content_type,
+                correlation_id=context.correlation_id,
+                delivery_mode=2,
+            ),
+            body=resp.encode(encoding="utf8", content_type=content_type),
+        )
 
     def _publish_process_completed(
         self,
+        channel: BlockingChannel,
         *,
         args: List[str],
         returncode: Optional[int],
@@ -135,19 +155,6 @@ class Executor:
         stderr: str,
         context: Context,
     ):
-        def _publish():
-            self.channel.basic_publish(
-                exchange=self.exchange_name,
-                routing_key=context.reply_to,
-                properties=BasicProperties(
-                    type=resp.type_name,
-                    content_encoding="utf8",
-                    content_type=content_type,
-                    correlation_id=context.correlation_id,
-                ),
-                body=resp.encode(encoding="utf8", content_type=content_type),
-            )
-
         resp = Completed(
             args=args,
             returncode=returncode,
@@ -157,4 +164,15 @@ class Executor:
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )
-        self.channel.connection.add_callback_threadsafe(_publish)
+        channel.basic_publish(
+            exchange=self.exchange_name,
+            routing_key=context.reply_to,
+            properties=BasicProperties(
+                type=resp.type_name,
+                content_encoding="utf8",
+                content_type=content_type,
+                correlation_id=context.correlation_id,
+                delivery_mode=2,
+            ),
+            body=resp.encode(encoding="utf8", content_type=content_type),
+        )
