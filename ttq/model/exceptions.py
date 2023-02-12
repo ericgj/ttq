@@ -1,9 +1,24 @@
+from pika.spec import BasicProperties
+
+
 class BaseError(Exception):
     pass
 
 
 class BaseWarning(Warning):
     pass
+
+
+class MessageMissingRequiredProperty(BaseError):
+    def __init__(self, prop: str, properties: BasicProperties):
+        self.prop = prop
+        self.properties = properties
+
+    def __str__(self) -> str:
+        return (
+            "Message missing required property and could not be processed: "
+            f"{self.prop}. properties = {self.properties}"
+        )
 
 
 class EventNotHandled(BaseError):

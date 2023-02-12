@@ -99,7 +99,7 @@ def test_run_and_abort_success(caplog):
     caplog.set_level(logging.DEBUG, logger=__name__)
 
     dur = 3
-    script = wait(0.5).and_send(SleepEvent(dur)).and_wait(1).and_abort(-1).and_wait(1)
+    script = wait(0.5).and_send(SleepEvent(dur)).and_wait(0.5).and_abort(-1).and_wait(1)
 
     that_sleep_accepted = that(is_accepted_response) & ~that(is_aborted_response)
     that_sleep_failed = (
@@ -152,7 +152,7 @@ def test_run_many_success(caplog):
     expected: List[Expect[Response]] = [
         ~that(is_error_response)
         & (that(is_accepted_response) | that(is_completed_response)),
-    ] * 20
+    ] * (times * 2)
 
     config = TestingConfig(
         name="test_command_run",

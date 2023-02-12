@@ -1,4 +1,5 @@
 from concurrent.futures import Future
+from functools import partial
 import logging
 import threading
 from typing import Iterable, Type, Tuple
@@ -15,6 +16,17 @@ from ..model.event import EventProtocol
 from ..model.message import Context
 from ..model.exceptions import EventNotHandled, ProcessNotFoundWarning
 from ..model.command import Command, FromEvent
+
+
+def ack(channel: BlockingChannel, delivery_tag: str, context: Context):
+    ctx = context.to_dict()
+    logger.debug(f"ACK message correlation_id = {context.correlation_id}", ctx)
+    channel.basic_ack(delivery_tag=delivery_tag)
+
+
+def nack(channel: BlockingChannel, delivery_tag: str, properties: BasicProperties):
+    logger.warning(f"NACK message, properties = {properties}")
+    channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
 class Listener:
@@ -85,32 +97,26 @@ class Listener:
         queue_name: str,
     ):
         # Note: unbinding and deleting queue not needed, transient queue takes care of itself
-        # Also note this is run from an executor thread, hence the threadsafe operation
-
-        def _unbind():
-            channel.basic_cancel(consumer_tag)
-
         ctx = context.to_dict()
         logger.debug(
             f"Unbinding message handling on transient abort queue {queue_name}", ctx
         )
-        channel.connection.add_callback_threadsafe(_unbind)
+        channel.basic_cancel(consumer_tag)
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
-        def _ack():
-            logger.debug(f"ACK message correlation_id = {context.correlation_id}", ctx)
-            ch.basic_ack(delivery_tag=m.delivery_tag)
-
-        def _nack():
-            logger.warning(
-                f"NACK message correlation_id = {context.correlation_id}", ctx
-            )
-            ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
-
-        context = get_context(m, p, body)
-        ctx = context.to_dict()
+        _nack = partial(nack, ch, m.delivery_tag, p)
+        context: Context
+        try:
+            context = Context.from_event(m, p, body)
+        except Exception as e:
+            ch.connection.add_callback_threadsafe(_nack)
+            logger.exception(e)
+            return
 
         try:
+            _ack = partial(ack, ch, m.delivery_tag, context)
+            ctx = context.to_dict()
+
             logger.info(
                 f"Handling message correlation_id = {context.correlation_id}", ctx
             )
@@ -142,16 +148,19 @@ class Listener:
     def _handle_abort(
         self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes
     ):
-        def _ack():
-            ch.basic_ack(delivery_tag=m.delivery_tag)
-
-        def _nack():
-            ch.basic_nack(delivery_tag=m.delivery_tag, requeue=False)
-
-        context = get_context(m, p, body)
-        ctx = context.to_dict()
+        _nack = partial(nack, ch, m.delivery_tag, p)
+        context: Context
+        try:
+            context = Context.from_event(m, p, body)
+        except Exception as e:
+            ch.connection.add_callback_threadsafe(_nack)
+            logger.exception(e)
+            return
 
         try:
+            _ack = partial(ack, ch, m.delivery_tag, context)
+            ctx = context.to_dict()
+
             command = self._abort_command(context.routing_key)
             self._submit_command(ch, context, command)
             ch.connection.add_callback_threadsafe(_ack)
@@ -175,60 +184,16 @@ class Listener:
                 logger.exception(e, ctx)
 
     def _submit_command(self, channel: Channel, context: Context, command: Command):
-        def _handle_result(f: Future):
-            # Note: this is run from the executor threads, and any exception
-            # here is swallowed. Hence the cautious error handling.
-
-            try:
-                # Note: exception thrown here if any error in executor thread,
-                # but note this _does not_ include any error in subprocess.
-                # Subprocess errors are handled as normal results. Exceptions
-                # might be thrown here publishing results, storing PID, etc.
-
-                cmd, rc = f.result()
-                if cmd.is_error(rc):
-                    logger.error(
-                        f"Error ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
-                        ctx,
-                    )
-                elif cmd.is_warning(rc):
-                    logger.warning(
-                        f"Warning ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
-                        ctx,
-                    )
-                elif cmd.is_success(rc):
-                    logger.info(
-                        f"Success ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
-                        ctx,
-                    )
-
-            except Exception as e:
-                logger.info(
-                    f"Error executing command {command.name} for correlation_id {context.correlation_id}",
-                    ctx,
-                )
-                logger.exception(e, ctx)
-
-            finally:
-                # Attempt to unbind and delete the transient abort queue
-                # connected to this task (via correlation_id routing key)
-                # Note this is done threadsafe
-
-                try:
-                    self.unbind_abort(
-                        channel,
-                        context,
-                        queue_name=abort_queue_name,
-                        consumer_tag=abort_consumer_tag,
-                    )
-                except Exception as e:
-                    logger.info(
-                        f"Error unbinding transient abort queue {abort_queue_name}, ignoring",
-                        ctx,
-                    )
-                    logger.exception(e, ctx)
-
         abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
+
+        exec_logger = ExecutionLogger(context, command)
+        unbind_abort = partial(
+            self.unbind_abort,
+            channel,
+            context,
+            consumer_tag=abort_consumer_tag,
+            queue_name=abort_queue_name,
+        )
 
         ctx = context.to_dict()
         logger.info(
@@ -239,7 +204,10 @@ class Listener:
         f = self.executor.submit(  # run command in thread + subprocess
             command=command, context=context, store=self.store
         )
-        f.add_done_callback(_handle_result)
+        f.add_done_callback(
+            lambda f: channel.connection.add_callback_threadsafe(unbind_abort)
+        )
+        f.add_done_callback(exec_logger)
 
     def _decode(self, body: bytes, channel: Channel, context: Context) -> EventProtocol:
         try:
@@ -265,24 +233,50 @@ class Listener:
         )
 
 
-def get_context(
-    method: Basic.Deliver, properties: BasicProperties, body: bytes
-) -> Context:
-    return Context(
-        exchange=method.exchange,
-        routing_key=method.routing_key,
-        content_length=len(body),
-        content_type=properties.content_type,
-        content_encoding=properties.content_encoding,
-        type=properties.type,
-        priority=properties.priority,
-        correlation_id=properties.correlation_id,
-        reply_to=properties.reply_to,
-        message_id=properties.message_id,
-        timestamp=properties.timestamp,
-        user_id=properties.user_id,
-        app_id=properties.app_id,
-    )
+class ExecutionLogger:
+    """Convenience class to log results (future.add_done_callback)"""
+
+    def __init__(self, context: Context, command: Command):
+        self.context = context
+        self.command = command
+
+    def __call__(self, f: Future):
+        # Note: this is run from the executor threads, and any exception
+        # here is swallowed. Hence the cautious error handling.
+
+        command = self.command
+        context = self.context
+        ctx = context.to_dict()
+
+        try:
+            # Note: exception thrown here if any error in executor thread,
+            # but note this _does not_ include any error in subprocess.
+            # Subprocess errors are handled as normal results. Exceptions
+            # might be thrown here publishing results, storing PID, etc.
+
+            cmd, rc = f.result()
+            if cmd.is_error(rc):
+                logger.error(
+                    f"Error ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    ctx,
+                )
+            elif cmd.is_warning(rc):
+                logger.warning(
+                    f"Warning ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    ctx,
+                )
+            elif cmd.is_success(rc):
+                logger.info(
+                    f"Success ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    ctx,
+                )
+
+        except Exception as e:
+            logger.info(
+                f"Error executing command {command.name} for correlation_id {context.correlation_id}",
+                ctx,
+            )
+            logger.exception(e, ctx)
 
 
 class Shutdown:
