@@ -4,7 +4,7 @@ import os
 from queue import Queue
 import shutil
 import threading
-from typing import List, Optional, Callable
+from typing import Any, List, Optional, Callable, Dict
 from uuid import uuid4
 
 OUTPUT_DIR = os.path.join("test", "output", "test_command_run")
@@ -89,6 +89,7 @@ def test_run_success(caplog):
         expected=expected,
         check=check_has_accepted_completed_pairs,
         app=app,
+        id_field="correlation_id",
         stop_after=dur + 2,
     )
 
@@ -131,6 +132,7 @@ def test_run_and_abort_success(caplog):
         expected=expected,
         check=check_has_accepted_completed_pairs,
         app=app,
+        id_field="message_id",
         stop_after=dur + 3,
     )
 
@@ -167,6 +169,7 @@ def test_run_many_success(caplog):
         expected=expected,
         check=check_has_accepted_completed_pairs,
         app=app,
+        id_field="message_id",
         stop_after=(times * (dur + every)) + 2,
     )
 
@@ -257,6 +260,7 @@ def run_script_and_evaluate(
     expected: List[Expect[Response]],
     app: EventMapping,
     stop_after: float,
+    id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ):
     logger.debug("connect and bind request channel")
@@ -280,6 +284,7 @@ def run_script_and_evaluate(
         response_queue=config.response_queue,
         response_abort_queue=config.response_abort_queue,
         request_shutdown_exchange=config.request_shutdown_exchange,
+        id_field=id_field,
     )
 
     stop = threading.Event()
@@ -528,6 +533,7 @@ class ScriptPublisher:
         request_shutdown_exchange: str,
         response_queue: str,
         response_abort_queue: str,
+        id_field: str,
     ):
         self.channel = channel
         self.request_exchange = request_exchange
@@ -536,45 +542,48 @@ class ScriptPublisher:
         self.request_shutdown_exchange = request_shutdown_exchange
         self.response_queue = response_queue
         self.response_abort_queue = response_abort_queue
+        self.id_field = id_field
 
     def send(self, event: EventProtocol) -> str:
-        corr_id = str(uuid4())
+        id = str(uuid4())
         logger.debug(
             f"Publishing event {event} to {self.request_exchange}, "
             f"type: {event.type_name}, "
             f"routing_key: {self.request_queue}, "
             f"reply_to: {self.response_queue}, "
-            f"correlation_id: {corr_id}"
+            f"{self.id_field}: {id}"
         )
+        props: Dict[str, Any] = {
+            "reply_to": self.response_queue,
+            self.id_field: id,
+            "type": event.type_name,
+            "content_type": "text/plain",
+        }
         self.channel.basic_publish(
             exchange=self.request_exchange,
             routing_key=self.request_queue,
-            properties=BasicProperties(
-                reply_to=self.response_queue,
-                correlation_id=corr_id,
-                type=event.type_name,
-                content_type="text/plain",
-            ),
+            properties=BasicProperties(**props),
             body=event.encode(),
         )
-        return corr_id
+        return id
 
     def abort(self, routing_key: str):
-        corr_id = str(uuid4())
+        id = str(uuid4())
         logger.debug(
             f"Publishing abort to {self.request_abort_exchange}, "
             f"routing_key: {routing_key}, "
             f"reply_to: {self.response_abort_queue}, "
-            f"correlation_id: {corr_id}"
+            f"{self.id_field}: {id}"
         )
+        props: Dict[str, Any] = {
+            "reply_to": self.response_abort_queue,
+            self.id_field: id,
+            "content_type": "text/plain",
+        }
         self.channel.basic_publish(
             exchange=self.request_abort_exchange,
             routing_key=routing_key,
-            properties=BasicProperties(
-                reply_to=self.response_abort_queue,
-                correlation_id=corr_id,
-                content_type="text/plain",
-            ),
+            properties=BasicProperties(**props),
             body=b"",
         )
 
