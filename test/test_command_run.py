@@ -215,8 +215,8 @@ class TestingConfig:
         return f"{self.name}-abort-resp"
 
     @property
-    def request_shutdown_exchange(self) -> str:
-        return f"{self.name}-shutdown-req-x"
+    def request_stop_exchange(self) -> str:
+        return f"{self.name}-stop-req-x"
 
     @property
     def connection_parameters(self) -> ConnectionParameters:
@@ -228,7 +228,7 @@ class TestingConfig:
             connection=self.connection_parameters,
             request_queue=self.request_queue,
             request_abort_exchange=self.request_abort_exchange,
-            request_shutdown_exchange=self.request_shutdown_exchange,
+            request_stop_exchange=self.request_stop_exchange,
             response_exchange=self.response_exchange,
             response_abort_exchange=self.response_abort_exchange,
             storage_file=os.path.join(self.temp_dir, "process_map"),
@@ -283,7 +283,7 @@ def run_script_and_evaluate(
         request_abort_exchange=config.request_abort_exchange,
         response_queue=config.response_queue,
         response_abort_queue=config.response_abort_queue,
-        request_shutdown_exchange=config.request_shutdown_exchange,
+        request_stop_exchange=config.request_stop_exchange,
         id_field=id_field,
     )
 
@@ -406,7 +406,7 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
         ch.exchange_declare(config.request_abort_exchange, auto_delete=True)
 
     ch.exchange_declare(
-        config.request_shutdown_exchange,
+        config.request_stop_exchange,
         exchange_type=ExchangeType.fanout,
         auto_delete=True,
     )
@@ -530,7 +530,7 @@ class ScriptPublisher:
         request_exchange: str,
         request_queue: str,
         request_abort_exchange: str,
-        request_shutdown_exchange: str,
+        request_stop_exchange: str,
         response_queue: str,
         response_abort_queue: str,
         id_field: str,
@@ -539,7 +539,7 @@ class ScriptPublisher:
         self.request_exchange = request_exchange
         self.request_queue = request_queue
         self.request_abort_exchange = request_abort_exchange
-        self.request_shutdown_exchange = request_shutdown_exchange
+        self.request_stop_exchange = request_stop_exchange
         self.response_queue = response_queue
         self.response_abort_queue = response_abort_queue
         self.id_field = id_field
@@ -588,9 +588,9 @@ class ScriptPublisher:
         )
 
     def finish(self, keys: List[str]):
-        logger.debug(f"Publishing shutdown to {self.request_shutdown_exchange}")
+        logger.debug(f"Publishing stop to {self.request_stop_exchange}")
         self.channel.basic_publish(
-            exchange=self.request_shutdown_exchange,
+            exchange=self.request_stop_exchange,
             routing_key="",
             body=b"",
         )

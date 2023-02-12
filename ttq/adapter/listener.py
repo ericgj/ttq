@@ -1,7 +1,6 @@
 from concurrent.futures import Future
 from functools import partial
 import logging
-import threading
 from typing import Iterable, Type, Tuple
 
 logger = logging.getLogger(__name__)
@@ -12,6 +11,7 @@ from pika.spec import Basic, BasicProperties
 
 from ..adapter.executor import Executor
 from ..adapter.store import Store
+from ..adapter.publisher import Publisher
 from ..model.event import EventProtocol
 from ..model.message import Context
 from ..model.exceptions import EventNotHandled, ProcessNotFoundWarning
@@ -201,11 +201,9 @@ class Listener:
             f"for correlation_id = {context.correlation_id}",
             ctx,
         )
-        f = self.executor.submit(  # run command in thread + subprocess
-            command=command, context=context, store=self.store
-        )
+        f = self.executor.submit(command=command, context=context)
         f.add_done_callback(
-            lambda f: channel.connection.add_callback_threadsafe(unbind_abort)
+            lambda _: channel.connection.add_callback_threadsafe(unbind_abort)
         )
         f.add_done_callback(exec_logger)
 
@@ -281,23 +279,22 @@ class ExecutionLogger:
 
 class Shutdown:
     """
-    Receive shutdown messages, shut down resources gracefully and set a stop
-    event for the main thread to finish shutdown.
-    Note: this handler could be merged into the Listener above, but for clarity
-    it's split out here.
+    Receive shutdown messages, shut down resources gracefully
     """
 
     def __init__(
         self,
         exchange_name: str,
+        routing_key: str,
         executor: Executor,
         store: Store,
-        stop: threading.Event,
+        publisher: Publisher,
     ):
         self.exchange_name = exchange_name
+        self.routing_key = routing_key
         self.executor = executor
         self.store = store
-        self.stop = stop
+        self.publisher = publisher
 
     def bind(self, channel: BlockingChannel):
         logger.debug("Declare transient shutdown queue")
@@ -310,10 +307,13 @@ class Shutdown:
         channel.queue_bind(
             exchange=self.exchange_name,
             queue=queue_name,
+            routing_key=self.routing_key,
         )
 
         logger.debug(f"Bind message handling on transient shutdown queue {queue_name}")
-        channel.basic_consume(queue=queue_name, on_message_callback=self._handle)
+        channel.basic_consume(
+            queue=queue_name, auto_ack=True, on_message_callback=self._handle
+        )
 
     def _handle(
         self,
@@ -328,4 +328,7 @@ class Shutdown:
         logger.debug("Stopping store")
         self.store.stop()
 
-        self.stop.set()
+        logger.debug("Stopping publisher")
+        self.publisher.stop()
+
+        channel.stop_consuming()  # !!!

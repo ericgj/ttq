@@ -27,9 +27,10 @@ def parse(raw: dict) -> Tuple[Config, Optional[dict]]:
             storage_file=parse_storage_file(top),
             request_queue=parse_request_queue(top),
             request_abort_exchange=parse_request_abort_exchange(top),
-            request_shutdown_exchange=parse_request_shutdown_exchange(top),
+            request_stop_exchange=parse_request_stop_exchange(top),
             response_exchange=parse_response_exchange(top),
             response_abort_exchange=parse_response_abort_exchange(top),
+            request_stop_routing_key=parse_request_stop_routing_key(top),
             prefetch_count=parse_prefetch_count(top),
             max_workers=parse_max_workers(top),
         ),
@@ -55,8 +56,8 @@ def parse_request_abort_exchange(raw) -> str:
     return "" if s is None else s
 
 
-def parse_request_shutdown_exchange(raw) -> str:
-    return parse_required_string(raw, "request_shutdown_exchange", TOP_LEVEL)
+def parse_request_stop_exchange(raw) -> str:
+    return parse_required_string(raw, "request_stop_exchange", TOP_LEVEL)
 
 
 def parse_response_exchange(raw) -> str:
@@ -66,6 +67,11 @@ def parse_response_exchange(raw) -> str:
 
 def parse_response_abort_exchange(raw) -> str:
     s = parse_optional_string(raw, "response_abort_exchange")
+    return "" if s is None else s
+
+
+def parse_request_stop_routing_key(raw) -> str:
+    s = parse_optional_string(raw, "request_stop_routing_key")
     return "" if s is None else s
 
 

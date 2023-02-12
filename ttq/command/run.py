@@ -1,12 +1,11 @@
 import logging
-import threading
 
 from pika.adapters.blocking_connection import BlockingConnection
-from pika.spec import BasicProperties
 
 from ..adapter.listener import Listener, Shutdown
 from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
+from ..adapter.publisher import Publisher
 from ..model.config import Config
 from ..model import command
 from ..util.mapping import compile_type_map
@@ -15,17 +14,6 @@ logger = logging.getLogger(__name__)
 
 
 def run(config: Config, app: command.EventMapping):
-    def _exit_handler():
-        logger.warning("Interrupt: sending shutdown message")
-        pub_ch.basic_publish(
-            config.request_shutdown_exchange,
-            routing_key="",
-            body=b"",
-            properties=BasicProperties(
-                delivery_mode=2,
-            ),
-        )
-
     to_command = compile_type_map(app)
     events = [k for k in app]
 
@@ -42,15 +30,16 @@ def run(config: Config, app: command.EventMapping):
     pub_ch = pub.channel()
     pub_ch.confirm_delivery()
 
-    logger.debug("Starting process map store")
-    store = Store(config.storage_file, ProcessMap, thread_name="ProcessMap")
-    store.start()
+    store = Store(config.storage_file, ProcessMap, thread_name="ttq-store")
+
+    publisher = Publisher(
+        channel=pub_ch,
+        exchange_name=config.response_exchange,
+        thread_name="ttq-publisher",
+    )
 
     executor = Executor(
-        connection_parameters=config.connection,
-        exchange_name=config.response_exchange,
-        abort_exchange_name=config.response_abort_exchange,
-        max_workers=config.max_workers,
+        store=store, publisher=publisher, max_workers=config.max_workers
     )
 
     prefetch_count = (
@@ -70,37 +59,40 @@ def run(config: Config, app: command.EventMapping):
     logger.debug("Binding subscriber channel consumers")
     listener.bind(sub_ch)
 
-    shutdown_event = threading.Event()
     shutdown = Shutdown(
-        exchange_name=config.request_shutdown_exchange,
+        exchange_name=config.request_stop_exchange,
+        routing_key=config.request_stop_routing_key,
         executor=executor,
         store=store,
-        stop=shutdown_event,
+        publisher=publisher,
     )
     shutdown.bind(sub_ch)
 
-    logger.info("Starting to consume messages on subscriber thread")
-    sub_th = threading.Thread(name="ttq-subscriber", target=sub_ch.start_consuming)
-    sub_th.start()
+    logger.debug("Starting publisher thread")
+    publisher.start()
 
-    logger.info("Starting publisher loop")
+    logger.debug("Starting process map store")
+    store.start()
+
     try:
-        while not shutdown_event.is_set():
-            pub.sleep(0.1)
+        logger.info("Starting to consume messages")
+        sub_ch.start_consuming()
 
     except KeyboardInterrupt:
-        _exit_handler()
+        trigger_stop(
+            publisher, config.request_stop_exchange, config.request_stop_routing_key
+        )
 
     except Exception as e:
         logger.exception(e)
-        _exit_handler()
+        trigger_stop(
+            publisher, config.request_stop_exchange, config.request_stop_routing_key
+        )
 
     finally:
-        logger.debug("Waiting for publisher channel events to finish")
-        pub.process_data_events()
-
-        logger.debug("Waiting for subscriber channel consumers to stop")
-        sub.add_callback_threadsafe(sub_ch.stop_consuming)
-        sub_th.join()
-
         logger.info("Stopped.")
+
+
+def trigger_stop(publisher: Publisher, exchange_name: str, routing_key: str):
+    logger.warning("Interrupt: sending shutdown message")
+    publisher.publish_stop(exchange_name, routing_key)

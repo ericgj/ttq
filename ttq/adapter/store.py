@@ -58,26 +58,39 @@ class Store(Thread):
         with self.lmdb.open(self.file_name, "r") as db:
             return db[key]
 
+    def put(self, key, value):
+        self._queue.put(Put(key, value))
+
+    def delete(self, key):
+        self._queue.put(Delete(key))
+
     def run(self):
         logger.debug("Opening lmdb")
         db = self.lmdb.open(self.file_name, "c")
 
         logger.debug("Listening to queue commands")
         while not self._stop_event.is_set():
-            try:
-                op = self._queue.get_nowait()
-                if isinstance(op, Put):
-                    logger.debug("Received: Put")
-                    db[op.key] = op.value
-                elif isinstance(op, Delete):
-                    logger.debug("Received: Delete")
-                    del db[op.key]
-                else:
-                    raise ValueError(f"Unknown operation type: {op}")
-                self._queue.task_done()
-            except Empty:
-                continue
+            self._handle(db)
 
     def stop(self):
         self._stop_event.set()
         self.join()
+        db = self.lmdb.open(self.file_name, "c")
+        self._handle(db)  # one last check of queue from main thread
+
+    def _handle(self, db):
+        try:
+            op = self._queue.get_nowait()
+            if isinstance(op, Put):
+                logger.debug("Received: Put")
+                db[op.key] = op.value
+            elif isinstance(op, Delete):
+                logger.debug("Received: Delete")
+                del db[op.key]
+            else:
+                raise ValueError(f"Unknown operation type: {op}")
+            self._queue.task_done()
+        except Empty:
+            pass
+        except Exception as e:
+            logger.exception(e)
