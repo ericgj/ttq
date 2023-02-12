@@ -90,7 +90,6 @@ def test_run_success(caplog):
         check=check_has_accepted_completed_pairs,
         app=app,
         id_field="correlation_id",
-        stop_after=dur + 2,
     )
 
 
@@ -133,7 +132,6 @@ def test_run_and_abort_success(caplog):
         check=check_has_accepted_completed_pairs,
         app=app,
         id_field="message_id",
-        stop_after=dur + 3,
     )
 
 
@@ -170,7 +168,6 @@ def test_run_many_success(caplog):
         check=check_has_accepted_completed_pairs,
         app=app,
         id_field="message_id",
-        stop_after=(times * (dur + every)) + 2,
     )
 
 
@@ -259,7 +256,6 @@ def run_script_and_evaluate(
     script: Script,
     expected: List[Expect[Response]],
     app: EventMapping,
-    stop_after: float,
     id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ):
@@ -285,10 +281,8 @@ def run_script_and_evaluate(
         response_abort_queue=config.response_abort_queue,
         request_stop_exchange=config.request_stop_exchange,
         id_field=id_field,
+        finish=lambda: resp_ch.connection.call_later(2, resp_ch.stop_consuming),
     )
-
-    stop = threading.Event()
-    timer = threading.Timer(stop_after, stop.set)
 
     ttq_th = run_ttq_in_thread(
         name="ttq",
@@ -307,16 +301,15 @@ def run_script_and_evaluate(
     logger.debug("start publishing events in thread")
     script_th.start()
 
-    timer.start()
+    # timer.start()
 
     logger.debug("listening for responses")
-    while not stop.is_set():
-        resp_ch.connection.sleep(1)
+    resp_ch.start_consuming()
 
-    logger.debug("timer set, joining script thread")
+    logger.debug("done, joining script thread")
     script_th.join()
 
-    logger.debug("timer set, joining ttq thread")
+    logger.debug("done, joining ttq thread")
     ttq_th.join()
 
     evaluate(expected, queue_iterator(resp_q), check_all=check)
@@ -391,6 +384,7 @@ def check_has_accepted_completed_pairs(rs: List[Response]) -> Optional[str]:
 def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
     c = connect(config)
     ch = c.channel()
+    ch.confirm_delivery()
 
     # Note: abort request exchange bound on the fly to transient queues, so
     # not bound here.
@@ -417,6 +411,7 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
 def connect_and_bind_response_channel(config: TestingConfig) -> BlockingChannel:
     c = connect(config)
     ch = c.channel()
+    ch.confirm_delivery()
 
     args = {"x-message-ttl": 1000}
     ch.queue_declare(config.response_queue, auto_delete=True, arguments=args)
@@ -500,8 +495,8 @@ class Relay:
         self.local_queue = local_queue
 
     def bind(self, ch: BlockingChannel):
-        ch.basic_consume(self.response_queue, self._handle)
-        ch.basic_consume(self.response_abort_queue, self._handle_abort)
+        ch.basic_consume(self.response_queue, self._handle, auto_ack=True)
+        ch.basic_consume(self.response_abort_queue, self._handle_abort, auto_ack=True)
 
     def _handle(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
@@ -509,8 +504,6 @@ class Relay:
         r = Response(p, body)
         logger.debug(f"Received: {r}")
         self.local_queue.put(r)
-        if m.delivery_tag is not None:
-            ch.basic_ack(m.delivery_tag)
 
     def _handle_abort(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
@@ -518,8 +511,6 @@ class Relay:
         r = AbortResponse(p, body)
         logger.debug(f"Received: {r}")
         self.local_queue.put(r)
-        if m.delivery_tag is not None:
-            ch.basic_ack(m.delivery_tag)
 
 
 class ScriptPublisher:
@@ -534,6 +525,7 @@ class ScriptPublisher:
         response_queue: str,
         response_abort_queue: str,
         id_field: str,
+        finish: Callable[[], Any],
     ):
         self.channel = channel
         self.request_exchange = request_exchange
@@ -543,6 +535,7 @@ class ScriptPublisher:
         self.response_queue = response_queue
         self.response_abort_queue = response_abort_queue
         self.id_field = id_field
+        self._finish = finish
 
     def send(self, event: EventProtocol) -> str:
         id = str(uuid4())
@@ -594,3 +587,4 @@ class ScriptPublisher:
             routing_key="",
             body=b"",
         )
+        self._finish()

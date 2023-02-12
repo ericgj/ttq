@@ -2,7 +2,6 @@ from setuptools import setup
 
 install_requires = [
     "pika",
-    "pika-pool @ git+ssh://git@github.com/ericgj/pika-pool@master#egg=pika_pool",
     "lmdbm @ git+ssh://git@github.com/Dobatymo/lmdb-python-dbm@master#egg=lmdbm",
 ]
 try:

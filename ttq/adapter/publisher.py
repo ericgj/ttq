@@ -101,6 +101,9 @@ class Publisher(Thread):
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )
+        logger.debug(
+            f"Publishing started process for correlation_id = {context.correlation_id}"
+        )
         self.channel.basic_publish(
             exchange=self.exchange_name,
             routing_key=context.reply_to,
@@ -124,6 +127,9 @@ class Publisher(Thread):
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )
+        logger.debug(
+            f"Publishing completed process for correlation_id = {context.correlation_id}"
+        )
         self.channel.basic_publish(
             exchange=self.exchange_name,
             routing_key=context.reply_to,
@@ -138,6 +144,7 @@ class Publisher(Thread):
         )
 
     def _publish_stop(self, exchange_name: str, routing_key: str):
+        logger.debug("Publishing stop")
         self.channel.basic_publish(
             exchange=exchange_name,
             routing_key=routing_key,
