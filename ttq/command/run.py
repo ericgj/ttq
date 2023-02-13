@@ -3,11 +3,13 @@ import logging
 from pika.adapters.blocking_connection import BlockingConnection
 
 from ..adapter.listener import Listener, Shutdown
+from ..adapter.redeliver import Redeliver
 from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
 from ..adapter.publisher import Publisher
 from ..model.config import Config
 from ..model import command
+from ..model.message import RedeliverExpDelay
 from ..util.mapping import compile_type_map
 
 logger = logging.getLogger(__name__)
@@ -32,10 +34,18 @@ def run(config: Config, app: command.EventMapping):
 
     store = Store(config.storage_file, ProcessMap, thread_name="ttq-store")
 
+    redeliver_rules = RedeliverExpDelay(
+        exchange_name=config.redeliver_exchange,
+        routing_key=config.redeliver_routing_key,
+        redeliver_limit=config.redeliver_limit,
+        initial_delay=1,
+    )
+
     publisher = Publisher(
         channel=pub_ch,
         exchange_name=config.response_exchange,
         thread_name="ttq-publisher",
+        redeliver=redeliver_rules,
     )
 
     executor = Executor(
@@ -48,16 +58,23 @@ def run(config: Config, app: command.EventMapping):
     logger.debug(f"Setting prefetch count to {prefetch_count}")
     sub_ch.basic_qos(prefetch_count=prefetch_count)
 
+    logger.debug("Binding subscriber channel consumers")
     listener = Listener(
         queue_name=config.request_queue,
         abort_exchange_name=config.request_abort_exchange,
         events=events,
         to_command=to_command,
         store=store,
+        publisher=publisher,
         executor=executor,
     )
-    logger.debug("Binding subscriber channel consumers")
     listener.bind(sub_ch)
+
+    redeliver = Redeliver(
+        pub_channel=pub_ch,
+        redeliver=redeliver_rules,
+    )
+    redeliver.bind(sub_ch)
 
     shutdown = Shutdown(
         exchange_name=config.request_stop_exchange,
@@ -90,6 +107,14 @@ def run(config: Config, app: command.EventMapping):
         )
 
     finally:
+        logger.debug("Closing subscriber connection")
+        sub.close()
+        logger.info("Subscriber connection closed")
+
+        logger.debug("Closing publisher connection")
+        pub.close()
+        logger.info("Publisher connection closed")
+
         logger.info("Stopped.")
 
 

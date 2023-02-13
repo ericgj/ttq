@@ -30,7 +30,7 @@ class ScriptHandlerProtocol(Protocol):
     def abort(self, routing_key: str):
         ...
 
-    def finish(self, keys: List[str]) -> str:
+    def finish(self, keys: List[str]):
         ...
 
 

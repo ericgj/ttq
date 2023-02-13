@@ -1,4 +1,4 @@
-from concurrent.futures import Future
+from concurrent.futures import Future, CancelledError
 from functools import partial
 import logging
 from typing import Iterable, Type, Tuple
@@ -30,12 +30,6 @@ def nack(channel: BlockingChannel, delivery_tag: str, properties: BasicPropertie
 
 
 class Listener:
-    # Note that as currently implemented, messages are consumed in a separate
-    # thread. But this is the *only* thread where queue operations happen, so
-    # it's probably OK to ack, nack, etc. synchronously here rather than
-    # schedule them for the main thread with `add_callback_threadsafe`. But
-    # this needs more testing.
-
     def __init__(
         self,
         *,
@@ -44,6 +38,7 @@ class Listener:
         events: Iterable[Type[EventProtocol]],
         to_command: FromEvent,
         store: Store,
+        publisher: Publisher,
         executor: Executor,
     ):
         self.queue_name = queue_name
@@ -51,6 +46,7 @@ class Listener:
         self.events = events
         self.to_command = to_command
         self.store = store
+        self.publisher = publisher
         self.executor = executor
 
     def bind(self, channel: BlockingChannel) -> str:
@@ -186,7 +182,11 @@ class Listener:
     def _submit_command(self, channel: Channel, context: Context, command: Command):
         abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
 
-        exec_logger = ExecutionLogger(context, command)
+        exec_handler = ExecutionHandler(
+            context=context,
+            command=command,
+            publisher=self.publisher,
+        )
         unbind_abort = partial(
             self.unbind_abort,
             channel,
@@ -205,7 +205,7 @@ class Listener:
         f.add_done_callback(
             lambda _: channel.connection.add_callback_threadsafe(unbind_abort)
         )
-        f.add_done_callback(exec_logger)
+        f.add_done_callback(exec_handler)
 
     def _decode(self, body: bytes, channel: Channel, context: Context) -> EventProtocol:
         try:
@@ -231,12 +231,18 @@ class Listener:
         )
 
 
-class ExecutionLogger:
-    """Convenience class to log results (future.add_done_callback)"""
+class ExecutionHandler:
+    """Execution error handling"""
 
-    def __init__(self, context: Context, command: Command):
+    def __init__(
+        self,
+        context: Context,
+        command: Command,
+        publisher: Publisher,
+    ):
         self.context = context
         self.command = command
+        self.publisher = publisher
 
     def __call__(self, f: Future):
         # Note: this is run from the executor threads, and any exception
@@ -255,23 +261,39 @@ class ExecutionLogger:
             cmd, rc = f.result()
             if cmd.is_error(rc):
                 logger.error(
-                    f"Error ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    f"Error ({rc}) executing command {command.name} "
+                    f"for correlation_id {context.correlation_id}",
                     ctx,
                 )
             elif cmd.is_warning(rc):
                 logger.warning(
-                    f"Warning ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    f"Warning ({rc}) executing command {command.name} "
+                    f"for correlation_id {context.correlation_id}",
                     ctx,
                 )
             elif cmd.is_success(rc):
                 logger.info(
-                    f"Success ({rc}) executing command {command.name} for correlation_id {context.correlation_id}",
+                    f"Success ({rc}) executing command {command.name} "
+                    f"for correlation_id {context.correlation_id}",
                     ctx,
                 )
 
+        except CancelledError:
+            logger.warning(
+                f"During shutdown, command {command.name} "
+                f"for correlation_id {context.correlation_id} was cancelled. "
+                "Requeuing message",
+                ctx,
+            )
+            try:
+                self.publisher.publish_redeliver(context=context)
+            except Exception as e:
+                logger.exception(e, ctx)
+
         except Exception as e:
             logger.info(
-                f"Error executing command {command.name} for correlation_id {context.correlation_id}",
+                f"Internal error executing command {command.name} "
+                f"for correlation_id {context.correlation_id}",
                 ctx,
             )
             logger.exception(e, ctx)

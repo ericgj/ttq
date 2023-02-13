@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
-from ..model.message import Context
+from ..model.message import Context, Redeliver
 from ..model.response import Accepted, Completed
 
 
@@ -22,6 +22,11 @@ class PublishCompleted:
     def __init__(self, context: Context, proc: CompletedProcess):
         self.context = context
         self.proc = proc
+
+
+class PublishRedeliver:
+    def __init__(self, context: Context):
+        self.context = context
 
 
 class PublishStop:
@@ -39,10 +44,12 @@ class Publisher(Thread):
         channel: BlockingChannel,
         *,
         exchange_name: str,
+        redeliver: Redeliver,
         thread_name: Optional[str] = None,
     ):
         self.channel = channel
         self.exchange_name = exchange_name
+        self.redeliver = redeliver
         self._queue: "Queue[Command]" = Queue()
         self._stop_event = Event()
         Thread.__init__(self, name=thread_name)
@@ -59,6 +66,9 @@ class Publisher(Thread):
 
     def publish_stop(self, exchange_name: str, routing_key: str = ""):
         self._queue.put(PublishStop(exchange_name, routing_key))
+
+    def publish_redeliver(self, context: Context):
+        self._queue.put(PublishRedeliver(context))
 
     def run(self):
         logger.debug("Listening to queue commands")
@@ -79,6 +89,9 @@ class Publisher(Thread):
             elif isinstance(cmd, PublishCompleted):
                 logger.debug("Received: PublishCompleted")
                 self._publish_completed(cmd.context, cmd.proc)
+            elif isinstance(cmd, PublishRedeliver):
+                logger.debug("Received: PublishRedeliver")
+                self._publish_redeliver(cmd.context)
             elif isinstance(cmd, PublishStop):
                 logger.debug("Received: PublishStop")
                 self._publish_stop(cmd.exchange_name, cmd.routing_key)
@@ -97,12 +110,14 @@ class Publisher(Thread):
             self.channel.connection.process_data_events()
 
     def _publish_started(self, context: Context):
+        ctx = context.to_dict()
         resp = Accepted()
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )
         logger.debug(
-            f"Publishing started process for correlation_id = {context.correlation_id}"
+            f"Publishing started process for correlation_id = {context.correlation_id}",
+            ctx,
         )
         self.channel.basic_publish(
             exchange=self.exchange_name,
@@ -118,6 +133,7 @@ class Publisher(Thread):
         )
 
     def _publish_completed(self, context: Context, proc: CompletedProcess):
+        ctx = context.to_dict()
         resp = Completed(
             args=proc.args,
             returncode=proc.returncode,
@@ -128,7 +144,8 @@ class Publisher(Thread):
             "text/plain" if context.content_type is None else context.content_type
         )
         logger.debug(
-            f"Publishing completed process for correlation_id = {context.correlation_id}"
+            f"Publishing completed process for correlation_id = {context.correlation_id}",
+            ctx,
         )
         self.channel.basic_publish(
             exchange=self.exchange_name,
@@ -142,6 +159,30 @@ class Publisher(Thread):
             ),
             body=resp.encode(encoding="utf8", content_type=content_type),
         )
+
+    def _publish_redeliver(self, context: Context):
+        ctx = context.to_dict()
+        redeliver_context = self.redeliver.delay_context(context)
+        if self.channel.connection.is_closed:
+            logger.warning(
+                "Connection already closed, can't redeliver message "
+                f"correlation_id = {redeliver_context.correlation_id}",
+                ctx,
+            )
+        else:
+            logger.debug(
+                "Redelivering message to delay queue "
+                f"via exchange {redeliver_context.exchange} "
+                f"with routing key '{redeliver_context.routing_key}' "
+                f"correlation_id = {redeliver_context.correlation_id}",
+                ctx,
+            )
+            self.channel.basic_publish(
+                exchange=redeliver_context.exchange,
+                routing_key=redeliver_context.routing_key,
+                properties=redeliver_context.properties,
+                body=redeliver_context.content,
+            )
 
     def _publish_stop(self, exchange_name: str, routing_key: str):
         logger.debug("Publishing stop")

@@ -21,6 +21,34 @@ class MessageMissingRequiredProperty(BaseError):
         )
 
 
+class RedeliverLimit(BaseError):
+    def __init__(self, correlation_id: str, *, header: str, count: int, limit: int):
+        self.correlation_id = correlation_id
+        self.header = header
+        self.count = count
+        self.limit = limit
+
+    def __str__(self) -> str:
+        return (
+            f"Cannot redeliver message correlation_id = {self.correlation_id}: "
+            f"redelivery limit = {self.limit} reached "
+            f"(using header '{self.header}')"
+        )
+
+
+class RedeliverOriginalExchangeMissing(BaseError):
+    def __init__(self, correlation_id: str, *, header: str):
+        self.correlation_id = correlation_id
+        self.header = header
+
+    def __str__(self) -> str:
+        return (
+            f"Cannot redeliver message correlation_id = {self.correlation_id}: "
+            "missing original exchange name "
+            f"(using header '{self.header}')"
+        )
+
+
 class EventNotHandled(BaseError):
     def __init__(self, type_name: str, content_type: str):
         self.type_name = type_name

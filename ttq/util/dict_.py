@@ -11,6 +11,11 @@ def merged(a: Dict[K, V], b: Dict[K, V]) -> Dict[K, V]:
     return c
 
 
+def removing(fields: Iterable[K], row: Dict[K, V]) -> Dict[K, V]:
+    keys = set(fields)
+    return {f: row[f] for f in row if f not in keys}
+
+
 def missing_fields(fields: Iterable[K], row: Dict[K, Any]) -> List[K]:
     keys = set(row.keys())
     return [f for f in fields if f not in keys]

@@ -4,7 +4,7 @@ import os
 from queue import Queue
 import shutil
 import threading
-from typing import Any, List, Optional, Callable, Dict
+from typing import Any, Iterable, List, Optional, Callable, Dict
 from uuid import uuid4
 
 OUTPUT_DIR = os.path.join("test", "output", "test_command_run")
@@ -31,6 +31,7 @@ from ttq.model.command import Command, EventMapping
 from util.script import Script, ScriptHandlerProtocol, wait  # , send
 from util.expect import Expect, that, evaluate
 from util.queue import queue_iterator
+from util.pytest import assert_no_log_matching, assert_logs_matching_in_order
 
 
 def setup_module(_):
@@ -171,6 +172,54 @@ def test_run_many_success(caplog):
     )
 
 
+# @pytest.mark.skip()
+def test_run_with_redeliver(caplog):
+    caplog.set_level(logging.DEBUG, logger="ttq")
+    caplog.set_level(logging.DEBUG, logger=__name__)
+
+    dur = 2
+    times = 2
+    every = 0.1
+    script = wait(0.1).and_send_repeatedly(lambda i: SleepEvent(dur), times, every)
+
+    config = TestingConfig(
+        name="test_command_run",
+        temp_dir=output_dir("test_run_with_redeliver"),
+        max_workers=1,
+    )
+
+    app = {SleepEvent: SleepCommand()}
+
+    run_script(
+        config=config,
+        script=script,
+        app=app,
+        id_field="message_id",
+    )
+
+    # Expect that
+    # 1) the delay queue is set up,
+    # 2) second task is cancelled on shutdown,
+    # 3) message is sent to the delay queue,
+    # 4) but not handled by Redeliver handler before shutdown.
+    #
+    assert_logs_matching_in_order(
+        [
+            (r"Bind transient delay queue", None),
+            (
+                r"During shutdown, command ping for correlation_id [a-f0-9\-]+ was cancelled",
+                logging.WARNING,
+            ),
+            (r"Redelivering message to delay queue via exchange", None),
+        ],
+        caplog.records,
+    )
+    assert_no_log_matching(
+        r"Redelivering message correlation_id [a-f0-9\-]+ after \d+ seconds",
+        caplog.records,
+    )
+
+
 # ------------------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------------------
@@ -179,9 +228,10 @@ def test_run_many_success(caplog):
 class TestingConfig:
     __test__ = False
 
-    def __init__(self, *, name: str, temp_dir: str):
+    def __init__(self, *, name: str, temp_dir: str, max_workers: int = 10):
         self.name = name
         self.temp_dir = temp_dir
+        self.max_workers = max_workers
 
     @property
     def request_exchange(self) -> str:
@@ -216,6 +266,14 @@ class TestingConfig:
         return f"{self.name}-stop-req-x"
 
     @property
+    def redeliver_exchange(self) -> str:
+        return f"{self.name}-redeliver-x"
+
+    @property
+    def redeliver_routing_key(self) -> str:
+        return ""
+
+    @property
     def connection_parameters(self) -> ConnectionParameters:
         return ConnectionParameters(host="localhost")
 
@@ -228,9 +286,11 @@ class TestingConfig:
             request_stop_exchange=self.request_stop_exchange,
             response_exchange=self.response_exchange,
             response_abort_exchange=self.response_abort_exchange,
+            redeliver_exchange=self.redeliver_exchange,
+            redeliver_routing_key=self.redeliver_routing_key,
             storage_file=os.path.join(self.temp_dir, "process_map"),
             prefetch_count=1,
-            max_workers=10,
+            max_workers=self.max_workers,
         )
 
 
@@ -259,6 +319,21 @@ def run_script_and_evaluate(
     id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ):
+    results = run_script(
+        config=config,
+        script=script,
+        app=app,
+        id_field=id_field,
+    )
+    evaluate(expected, results, check_all=check)
+
+
+def run_script(
+    config: TestingConfig,
+    script: Script,
+    app: EventMapping,
+    id_field: str,
+) -> Iterable[Response]:
     logger.debug("connect and bind request channel")
     request_ch = connect_and_bind_request_channel(config)
     logger.debug("connect and bind response channel")
@@ -312,7 +387,7 @@ def run_script_and_evaluate(
     logger.debug("done, joining ttq thread")
     ttq_th.join()
 
-    evaluate(expected, queue_iterator(resp_q), check_all=check)
+    return queue_iterator(resp_q)
 
 
 def is_accepted_response(r: Response) -> bool:
@@ -398,6 +473,9 @@ def connect_and_bind_request_channel(config: TestingConfig) -> BlockingChannel:
 
     if not config.request_abort_exchange == "":
         ch.exchange_declare(config.request_abort_exchange, auto_delete=True)
+
+    if not config.redeliver_exchange == "":
+        ch.exchange_declare(config.redeliver_exchange, auto_delete=True)
 
     ch.exchange_declare(
         config.request_stop_exchange,

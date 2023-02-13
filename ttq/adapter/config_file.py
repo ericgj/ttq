@@ -31,6 +31,9 @@ def parse(raw: dict) -> Tuple[Config, Optional[dict]]:
             response_exchange=parse_response_exchange(top),
             response_abort_exchange=parse_response_abort_exchange(top),
             request_stop_routing_key=parse_request_stop_routing_key(top),
+            redeliver_exchange=parse_redeliver_exchange(top),
+            redeliver_routing_key=parse_redeliver_routing_key(top),
+            redeliver_limit=parse_redeliver_limit(top),
             prefetch_count=parse_prefetch_count(top),
             max_workers=parse_max_workers(top),
         ),
@@ -73,6 +76,20 @@ def parse_response_abort_exchange(raw) -> str:
 def parse_request_stop_routing_key(raw) -> str:
     s = parse_optional_string(raw, "request_stop_routing_key")
     return "" if s is None else s
+
+
+def parse_redeliver_exchange(raw) -> str:
+    s = parse_optional_string(raw, "redeliver_exchange")
+    return "" if s is None else s
+
+
+def parse_redeliver_routing_key(raw) -> str:
+    s = parse_optional_string(raw, "redeliver_routing_key")
+    return "" if s is None else s
+
+
+def parse_redeliver_limit(raw) -> Optional[int]:
+    return parse_optional_int(raw, "redeliver_limit")
 
 
 def parse_prefetch_count(raw) -> Optional[int]:
