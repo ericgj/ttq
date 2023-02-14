@@ -1,7 +1,7 @@
 from concurrent.futures import Future, CancelledError
 from functools import partial
 import logging
-from typing import Iterable, Type, Tuple
+from typing import Iterable, Type, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,83 +101,113 @@ class Listener:
 
     def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
         _nack = partial(nack, ch, m.delivery_tag, p)
-        context: Context
+        context: Optional[Context] = None
+        command: Optional[Command] = None
         try:
+            logger.debug("Message received, getting context")
             context = Context.from_event(m, p, body)
-        except Exception as e:
-            ch.connection.add_callback_threadsafe(_nack)
-            logger.exception(e)
-            return
-
-        try:
-            _ack = partial(ack, ch, m.delivery_tag, context)
             ctx = context.to_dict()
 
             logger.info(
                 f"Handling message correlation_id = {context.correlation_id}", ctx
             )
-            event = self._decode(body, channel=ch, context=context)
+
+            _ack = partial(ack, ch, m.delivery_tag, context)
+
+            logger.debug(
+                f"Decoding event from message correlation_id = {context.correlation_id}",
+                ctx,
+            )
+            event = self._decode(context=context)
 
             logger.debug(f"Converting event {event.type_name} to command", ctx)
             command = self.to_command(event)
-            self._submit_command(ch, context, command)
+
+            logger.debug(
+                f"Submitting command {command.name} "
+                f"for message correlation_id = {context.correlation_id}",
+                ctx,
+            )
+            self._submit_command(channel=ch, context=context, command=command)
+            self._accept_message(context=context, command=command)
             ch.connection.add_callback_threadsafe(_ack)
 
         except Exception as e:
-            if isinstance(e, Warning):
-                ch.connection.add_callback_threadsafe(_ack)
-                logger.info(
-                    "Warning submitting command for correlation_id = "
-                    f"{context.correlation_id}",
-                    ctx,
-                )
-                logger.warning(e, ctx)
-            else:
-                ch.connection.add_callback_threadsafe(_nack)
-                logger.info(
-                    "Error submitting command for correlation_id = "
-                    f"{context.correlation_id}",
-                    ctx,
-                )
-                logger.exception(e, ctx)
+            self._reject_message(error=e, properties=p, context=context)
+            ch.connection.add_callback_threadsafe(_nack)
 
     def _handle_abort(
         self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes
     ):
         _nack = partial(nack, ch, m.delivery_tag, p)
-        context: Context
+        context: Optional[Context] = None
+        command: Optional[Command] = None
         try:
+            logger.debug("Message received, getting context")
             context = Context.from_event(m, p, body)
-        except Exception as e:
-            ch.connection.add_callback_threadsafe(_nack)
-            logger.exception(e)
-            return
-
-        try:
-            _ack = partial(ack, ch, m.delivery_tag, context)
             ctx = context.to_dict()
 
+            logger.info(
+                f"Handling message correlation_id = {context.correlation_id}", ctx
+            )
+
+            _ack = partial(ack, ch, m.delivery_tag, context)
+
+            logger.debug(
+                f"Generating abort command for correlation_id = "
+                f"{context.routing_key}",
+                ctx,
+            )
             command = self._abort_command(context.routing_key)
-            self._submit_command(ch, context, command)
+
+            logger.debug(
+                f"Submitting command {command.name} "
+                f"for message correlation_id = {context.correlation_id}",
+                ctx,
+            )
+            self._submit_command(channel=ch, context=context, command=command)
+            self._accept_message(context=context, command=command)
             ch.connection.add_callback_threadsafe(_ack)
 
         except Exception as e:
-            if isinstance(e, Warning):
-                ch.connection.add_callback_threadsafe(_ack)
-                logger.info(
-                    "Warning submitting abort command for correlation_id = "
-                    f"{context.correlation_id}",
-                    ctx,
-                )
-                logger.warning(e, ctx)
-            else:
-                ch.connection.add_callback_threadsafe(_nack)
-                logger.info(
-                    "Error submitting abort command for correlation_id = "
-                    f"{context.correlation_id}",
-                    ctx,
-                )
-                logger.exception(e, ctx)
+            self._reject_message(error=e, properties=p, context=context)
+            ch.connection.add_callback_threadsafe(_nack)
+
+    def _accept_message(
+        self,
+        context: Context,
+        command: Command,
+    ):
+        ctx = context.to_dict()
+        logger.info(
+            f"Submitted command {command.name} for correlation_id = "
+            f"{context.correlation_id}",
+            ctx,
+        )
+        self.publisher.publish_accepted(context=context, command=command)
+
+    def _reject_message(
+        self,
+        error: Exception,
+        properties: BasicProperties,
+        context: Optional[Context],
+    ):
+        if context is None:
+            logger.info(
+                f"Error getting context from message, properties = " f"{properties}",
+            )
+            logger.exception(error)
+            self.publisher.publish_rejected(error=error, context=context)
+
+        else:
+            ctx = context.to_dict()
+            logger.info(
+                f"Error submitting command for correlation_id = "
+                f"{context.correlation_id}",
+                ctx,
+            )
+            logger.exception(error, ctx)
+            self.publisher.publish_reject(error=error, context=context)
 
     def _submit_command(self, channel: Channel, context: Context, command: Command):
         abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
@@ -195,22 +225,16 @@ class Listener:
             queue_name=abort_queue_name,
         )
 
-        ctx = context.to_dict()
-        logger.info(
-            f"Submitting command {command.name} "
-            f"for correlation_id = {context.correlation_id}",
-            ctx,
-        )
         f = self.executor.submit(command=command, context=context)
         f.add_done_callback(
             lambda _: channel.connection.add_callback_threadsafe(unbind_abort)
         )
         f.add_done_callback(exec_handler)
 
-    def _decode(self, body: bytes, channel: Channel, context: Context) -> EventProtocol:
+    def _decode(self, context: Context) -> EventProtocol:
         try:
             return next(
-                e.decode(body, encoding=context.content_encoding)
+                e.decode(context.content, encoding=context.content_encoding)
                 for e in self.events
                 if e.type_name == context.type
                 and e.content_type == context.content_type
@@ -281,8 +305,8 @@ class ExecutionHandler:
         except CancelledError:
             logger.warning(
                 f"During shutdown, command {command.name} "
-                f"for correlation_id {context.correlation_id} was cancelled. "
-                "Requeuing message",
+                f"for correlation_id {context.correlation_id} was cancelled, "
+                "retrying",
                 ctx,
             )
             try:

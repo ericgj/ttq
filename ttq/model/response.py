@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict
 import json
 from typing import List, Protocol, Optional, Dict, Any
 
+from ..model.command import Command
 from ..model.exceptions import NoEncodingForContentType
 
 
@@ -12,8 +13,49 @@ class Response(Protocol):
         ...
 
 
+@dataclass
 class Accepted:
     type_name = "Accepted"
+    command: Command
+
+    def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
+        if content_type == "text/plain":
+            return b""
+        elif content_type == "application/json":
+            c = {"command": self.command.to_dict()}
+            s = json.dumps(c)
+            return s.encode() if encoding is None else s.encode(encoding)
+        else:
+            raise NoEncodingForContentType(self.type_name, content_type)
+
+
+@dataclass
+class Rejected:
+    type_name = "Rejected"
+    error: Exception
+
+    def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
+        if content_type == "text/plain":
+            return (
+                str(self.error)
+                if encoding is None
+                else str(self.error).encode(encoding)
+            )
+        elif content_type == "application/json":
+            e = {
+                "error": {
+                    "type": self.error.__class__.__name__,
+                    "message": str(self.error),
+                }
+            }
+            s = json.dumps(e)
+            return s.encode() if encoding is None else s.encode(encoding)
+        else:
+            raise NoEncodingForContentType(self.type_name, content_type)
+
+
+class Started:
+    type_name = "Started"
 
     def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
         if content_type == "text/plain":

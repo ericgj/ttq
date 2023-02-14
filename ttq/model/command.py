@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Optional, Type, Callable, Mapping, TypeVar
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Type, Callable, Mapping, TypeVar, Any
 
 from ..model.event import EventProtocol
 
@@ -23,6 +23,9 @@ class Command:
 
     def is_error(self, rc: int) -> bool:
         return not (self.is_success(rc) or self.is_warning(rc))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 E = TypeVar("E", bound="EventProtocol")

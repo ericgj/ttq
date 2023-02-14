@@ -9,8 +9,21 @@ logger = logging.getLogger(__name__)
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
+from ..model.command import Command
 from ..model.message import Context, Redeliver
-from ..model.response import Accepted, Completed
+from ..model.response import Accepted, Rejected, Started, Completed
+
+
+class PublishAccepted:
+    def __init__(self, context: Context, command: Command):
+        self.context = context
+        self.command = command
+
+
+class PublishRejected:
+    def __init__(self, context: Context, error: Exception):
+        self.context = context
+        self.error = error
 
 
 class PublishStarted:
@@ -58,6 +71,12 @@ class Publisher(Thread):
     def queue(self) -> "Queue[Command]":
         return self._queue
 
+    def publish_accepted(self, context: Context, command: Command):
+        self._queue.put(PublishAccepted(context, command))
+
+    def publish_rejected(self, context: Context, error: Exception):
+        self._queue.put(PublishRejected(context, error))
+
     def publish_started(self, context: Context):
         self._queue.put(PublishStarted(context))
 
@@ -83,7 +102,13 @@ class Publisher(Thread):
     def _handle(self):
         try:
             cmd = self._queue.get_nowait()
-            if isinstance(cmd, PublishStarted):
+            if isinstance(cmd, PublishAccepted):
+                logger.debug("Received: PublishAccepted")
+                self._publish_accepted(cmd.context, cmd.command)
+            elif isinstance(cmd, PublishRejected):
+                logger.debug("Received: PublishRejected")
+                self._publish_rejected(cmd.context, cmd.error)
+            elif isinstance(cmd, PublishStarted):
                 logger.debug("Received: PublishStarted")
                 self._publish_started(cmd.context)
             elif isinstance(cmd, PublishCompleted):
@@ -109,9 +134,55 @@ class Publisher(Thread):
         finally:
             self.channel.connection.process_data_events()
 
+    def _publish_accepted(self, context: Context, command: Command):
+        ctx = context.to_dict()
+        resp = Accepted(command)
+        content_type = (
+            "text/plain" if context.content_type is None else context.content_type
+        )
+        logger.debug(
+            f"Publishing accepted message for correlation_id = {context.correlation_id}",
+            ctx,
+        )
+        self.channel.basic_publish(
+            exchange=self.exchange_name,
+            routing_key=context.reply_to,
+            properties=BasicProperties(
+                type=resp.type_name,
+                content_encoding="utf8",
+                content_type=content_type,
+                correlation_id=context.correlation_id,
+                delivery_mode=2,
+            ),
+            body=resp.encode(encoding="utf8", content_type=content_type),
+        )
+
+    def _publish_rejected(self, context: Context, error: Exception):
+        ctx = context.to_dict()
+        resp = Rejected(error)
+        content_type = (
+            "text/plain" if context.content_type is None else context.content_type
+        )
+        logger.debug(
+            f"Publishing rejected message for correlation_id = {context.correlation_id}",
+            ctx,
+        )
+        self.channel.basic_publish(
+            exchange=self.exchange_name,
+            routing_key=context.reply_to,
+            properties=BasicProperties(
+                type=resp.type_name,
+                content_encoding="utf8",
+                content_type=content_type,
+                correlation_id=context.correlation_id,
+                delivery_mode=2,
+            ),
+            body=resp.encode(encoding="utf8", content_type=content_type),
+        )
+
     def _publish_started(self, context: Context):
         ctx = context.to_dict()
-        resp = Accepted()
+        resp = Started()
         content_type = (
             "text/plain" if context.content_type is None else context.content_type
         )

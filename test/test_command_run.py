@@ -72,6 +72,7 @@ def test_run_success(caplog):
 
     expected: List[Expect[Response]] = [
         that(is_accepted_response) & ~that(is_aborted_response),
+        that(is_started_response) & ~that(is_aborted_response),
         that(is_completed_response)
         & ~that(is_aborted_response)
         & ~that(is_error_response),
@@ -88,7 +89,7 @@ def test_run_success(caplog):
         config=config,
         script=script,
         expected=expected,
-        check=check_has_accepted_completed_pairs,
+        check=check_has_accepted_started_completed_triplets,
         app=app,
         id_field="correlation_id",
     )
@@ -103,18 +104,22 @@ def test_run_and_abort_success(caplog):
     script = wait(0.5).and_send(SleepEvent(dur)).and_wait(0.5).and_abort(-1).and_wait(1)
 
     that_sleep_accepted = that(is_accepted_response) & ~that(is_aborted_response)
+    that_sleep_started = that(is_started_response) & ~that(is_aborted_response)
     that_sleep_failed = (
         that(is_completed_response)
         & ~that(is_aborted_response)
         & that(is_error_response)
     )
     that_abort_accepted = that(is_accepted_response) & that(is_aborted_response)
+    that_abort_started = that(is_started_response) & that(is_aborted_response)
     that_abort_completed = that(is_completed_response) & that(is_aborted_response)
 
     # Note: completed responses can come back in either order.
     expected: List[Expect[Response]] = [
         that_sleep_accepted,
+        that_sleep_started,
         that_abort_accepted,
+        that_abort_started,
         that_sleep_failed | that_abort_completed,
         that_sleep_failed | that_abort_completed,
     ]
@@ -130,7 +135,7 @@ def test_run_and_abort_success(caplog):
         config=config,
         script=script,
         expected=expected,
-        check=check_has_accepted_completed_pairs,
+        check=check_has_accepted_started_completed_triplets,
         app=app,
         id_field="message_id",
     )
@@ -152,8 +157,12 @@ def test_run_many_success(caplog):
 
     expected: List[Expect[Response]] = [
         ~that(is_error_response)
-        & (that(is_accepted_response) | that(is_completed_response)),
-    ] * (times * 2)
+        & (
+            that(is_accepted_response)
+            | that(is_started_response)
+            | that(is_completed_response)
+        ),
+    ] * (times * 3)
 
     config = TestingConfig(
         name="test_command_run",
@@ -166,7 +175,7 @@ def test_run_many_success(caplog):
         config=config,
         script=script,
         expected=expected,
-        check=check_has_accepted_completed_pairs,
+        check=check_has_accepted_started_completed_triplets,
         app=app,
         id_field="message_id",
     )
@@ -394,6 +403,14 @@ def is_accepted_response(r: Response) -> bool:
     return r.type_name == "Accepted"
 
 
+def is_rejected_response(r: Response) -> bool:
+    return r.type_name == "Rejected"
+
+
+def is_started_response(r: Response) -> bool:
+    return r.type_name == "Started"
+
+
 def is_completed_response(r: Response) -> bool:
     return r.type_name == "Completed"
 
@@ -416,12 +433,19 @@ def is_error_response(r: Response) -> bool:
     return False
 
 
-def check_has_accepted_completed_pairs(rs: List[Response]) -> Optional[str]:
+def check_has_accepted_started_completed_triplets(rs: List[Response]) -> Optional[str]:
     accepted_ids = set(
         [
             r.properties.correlation_id
             for r in rs
             if is_accepted_response(r) and r.properties.correlation_id is not None
+        ]
+    )
+    started_ids = set(
+        [
+            r.properties.correlation_id
+            for r in rs
+            if is_started_response(r) and r.properties.correlation_id is not None
         ]
     )
     completed_ids = set(
@@ -431,26 +455,46 @@ def check_has_accepted_completed_pairs(rs: List[Response]) -> Optional[str]:
             if is_completed_response(r) and r.properties.correlation_id is not None
         ]
     )
-    not_completed = accepted_ids - completed_ids
-    not_accepted = completed_ids - accepted_ids
-    if len(not_completed) == 0 and len(not_accepted) == 0:
+    accepted_not_started = accepted_ids - started_ids
+    started_not_accepted = started_ids - accepted_ids
+    started_not_completed = started_ids - completed_ids
+    completed_not_started = completed_ids - started_ids
+    completed_not_accepted = completed_ids - accepted_ids
+    accepted_not_completed = accepted_ids - completed_ids
+
+    if (
+        len(accepted_not_started) == 0
+        and len(started_not_accepted) == 0
+        and len(started_not_completed) == 0
+        and len(completed_not_started) == 0
+        and len(completed_not_accepted) == 0
+        and len(accepted_not_completed) == 0
+    ):
         return None
     else:
         return ". ".join(
             (
                 []
-                if len(not_completed) == 0
+                if len(started_not_completed) == 0 and len(accepted_not_completed) == 0
                 else [
-                    "No completed responses for the following correlation_ids: "
-                    + ", ".join(list(not_completed))
+                    "Missing completed responses for the following correlation_ids: "
+                    + ", ".join(list(started_not_completed | accepted_not_completed))
                 ]
             )
             + (
                 []
-                if len(not_accepted) == 0
+                if len(accepted_not_started) == 0 and len(completed_not_started) == 0
                 else [
-                    "No accepted responses for the following correlation_ids: "
-                    + ", ".join(list(not_accepted))
+                    "Missing started responses for the following correlation_ids: "
+                    + ", ".join(list(accepted_not_started | completed_not_started))
+                ]
+            )
+            + (
+                []
+                if len(started_not_accepted) == 0 and len(completed_not_accepted) == 0
+                else [
+                    "Missing accepted responses for the following correlation_ids: "
+                    + ", ".join(list(started_not_accepted | completed_not_accepted))
                 ]
             )
         )
