@@ -13,3 +13,4 @@ class EventProtocol(Protocol):
 
     def encode(self: Self, *, encoding: Optional[str] = None) -> bytes:
         ...
+
