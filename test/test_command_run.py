@@ -23,7 +23,7 @@ from pika.exchange_type import ExchangeType
 
 # import pytest  # type: ignore
 
-from ttq.command.run import run
+from ttq import run
 from ttq.model.config import Config
 from ttq.model.event import EventProtocol
 from ttq.model.command import Command, EventMapping

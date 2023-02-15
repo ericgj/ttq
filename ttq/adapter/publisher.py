@@ -129,6 +129,10 @@ class Publisher(Thread):
             pass
 
         except Exception as e:
+            # Note errors here (for example message encoding errors, or
+            # connection errors) are just swallowed after writing to the log,
+            # meaning no response is sent. This is not ideal, but I'm not sure
+            # how better to handle it.
             logger.exception(e)
 
         finally:
