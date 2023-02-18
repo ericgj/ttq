@@ -49,21 +49,21 @@ def missing_or_null_or_empty_fields(fields: Iterable[K], row: Dict[K, Any]) -> L
 
 
 def fields_are_not_missing(fields: Iterable[K], row: Dict[K, Any]) -> bool:
-    return not any(missing_fields(fields, row))
+    return len(missing_fields(fields, row)) == 0
 
 
 def fields_are_not_null(fields: Iterable[K], row: Dict[K, Any]) -> bool:
-    return not any(null_fields(fields, row))
+    return len(null_fields(fields, row)) == 0
 
 
 def fields_are_not_empty(fields: Iterable[K], row: Dict[K, Any]) -> bool:
-    return not any(empty_fields(fields, row))
+    return len(empty_fields(fields, row)) == 0
 
 
 def fields_are_not_missing_or_null_or_empty(
     fields: Iterable[K], row: Dict[K, Any]
 ) -> bool:
-    return not any(missing_or_null_or_empty_fields(fields, row))
+    return len(missing_or_null_or_empty_fields(fields, row)) == 0
 
 
 def excluding_fields(fields: Iterable[K], row: Dict[K, V]) -> Dict[K, V]:

@@ -23,9 +23,11 @@ setup(
         "ttq.command",
         "ttq.adapter",
         "ttq.model",
+        "ttq.model.event",
         "ttq.util",
         "ttq.util.concurrent",
     ],
+    package_data={"ttq": ["py.typed"]},
     install_requires=install_requires,
     tests_require=tests_require,
     extras_require={"test": tests_require},  # to make pip happy
