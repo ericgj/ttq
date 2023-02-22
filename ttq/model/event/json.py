@@ -9,10 +9,10 @@ class Codec(Protocol):
     """Note: this is the protocol used by JSON Type Definition (jtd)"""
 
     @classmethod
-    def from_json(cls: Type[C], data) -> C:
+    def from_json_data(cls: Type[C], data) -> C:
         ...
 
-    def to_json(self: C):
+    def to_json_data(self: C):
         ...
 
 
@@ -22,7 +22,7 @@ class Event:
     codec: Protocol[Codec]
 
     def __init__(self, data):
-        self.model = self.codec.from_json(data)
+        self.model = self.codec.from_json_data(data)
 
     def __str__(self) -> str:
         return (
@@ -40,5 +40,5 @@ class Event:
         )
 
     def encode(self, *, encoding: Optional[str] = None) -> bytes:
-        s = json.dumps(self.model.to_json())
+        s = json.dumps(self.model.to_json_data())
         return s.encode() if encoding is None else s.encode(encoding)
