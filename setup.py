@@ -13,7 +13,7 @@ tests_require = ["pytest", "pytest-random-order"]
 
 setup(
     name="ttq",
-    version="0.3",
+    version="0.4",
     description="A RabbitMQ based RPC + work queue",
     license="MIT",
     author="Eric Gjertsen",
