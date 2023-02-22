@@ -1,6 +1,7 @@
 from concurrent.futures import Future, CancelledError
 from functools import partial
 import logging
+from subprocess import CompletedProcess
 from typing import Iterable, Type, Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -280,24 +281,28 @@ class ExecutionHandler:
             # Note: exception thrown here if any error in executor thread,
             # but note this _does not_ include any error in subprocess.
             # Subprocess errors are handled as normal results. Exceptions
-            # might be thrown here publishing results, storing PID, etc.
+            # might be thrown here running pre- and post-exec routines,
+            # publishing results, storing PID, etc.
 
-            cmd, rc = f.result()
-            if cmd.is_error(rc):
+            cmd: Command
+            proc: CompletedProcess
+
+            cmd, proc = f.result()
+            if cmd.is_error(proc):
                 logger.error(
-                    f"Error ({rc}) executing command {command.name} "
+                    f"Error ({proc.returncode}) executing command {command.name} "
                     f"for correlation_id {context.correlation_id}",
                     ctx,
                 )
-            elif cmd.is_warning(rc):
+            elif cmd.is_warning(proc):
                 logger.warning(
-                    f"Warning ({rc}) executing command {command.name} "
+                    f"Warning ({proc.returncode}) executing command {command.name} "
                     f"for correlation_id {context.correlation_id}",
                     ctx,
                 )
-            elif cmd.is_success(rc):
+            elif cmd.is_success(proc):
                 logger.info(
-                    f"Success ({rc}) executing command {command.name} "
+                    f"Success ({proc.returncode}) executing command {command.name} "
                     f"for correlation_id {context.correlation_id}",
                     ctx,
                 )

@@ -229,6 +229,39 @@ def test_run_with_redeliver(caplog):
     )
 
 
+# @pytest.mark.skip()
+def test_run_with_pre_and_post_exec_success(caplog):
+    caplog.set_level(logging.DEBUG, logger="ttq")
+    caplog.set_level(logging.DEBUG, logger=__name__)
+
+    dur = 2
+    script = wait(0.1).and_send(SleepEvent(dur)).and_wait(1)
+
+    temp_dir = output_dir("test_run_with_pre_and_post_exec_success")
+
+    config = TestingConfig(
+        name="test_command_run",
+        temp_dir=temp_dir,
+    )
+
+    app = {SleepEvent: SleepCommandWithPrePost(temp_dir)}
+
+    run_script(
+        config=config,
+        script=script,
+        app=app,
+        id_field="correlation_id",
+    )
+
+    exp_pre_file = os.path.join(temp_dir, "pre")
+    exp_post_file = os.path.join(temp_dir, "post")
+
+    assert os.path.exists(exp_pre_file), f"Expected output file missing: {exp_pre_file}"
+    assert os.path.exists(
+        exp_post_file
+    ), f"Expected output file missing: {exp_post_file}"
+
+
 # ------------------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------------------
@@ -602,6 +635,28 @@ class SleepCommand:
     def __call__(self, event: SleepEvent) -> Command:
         n = int(event.duration + 1)
         return Command("ping", ["ping", "-n", str(n), "127.0.0.1"])
+
+
+class SleepCommandWithPrePost:
+    def __init__(self, dir):
+        self.dir = dir
+
+    def pre_exec(self, context):
+        with open(os.path.join(self.dir, "pre"), "w") as f:
+            f.write(context.correlation_id)
+
+    def post_exec(self, context):
+        with open(os.path.join(self.dir, "post"), "w") as f:
+            f.write(context.correlation_id)
+
+    def __call__(self, event: SleepEvent) -> Command:
+        n = int(event.duration + 1)
+        return Command(
+            "ping",
+            ["ping", "-n", str(n), "127.0.0.1"],
+            pre_exec=self.pre_exec,
+            post_exec=self.post_exec,
+        )
 
 
 class Relay:

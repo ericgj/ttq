@@ -28,17 +28,53 @@ class Executor:
         return self._executor._max_workers
 
     def submit(self, command: Command, context: Context) -> Future:
-        f = self._executor.submit(self._exec, command, context)
+        f = self._executor.submit(self.execute, command, context)
         return f
 
     def shutdown(self):
         self._executor.shutdown(wait=True, cancel_futures=True)
 
-    def _exec(
+    def execute(
         self,
         command: Command,
         context: Context,
-    ) -> Tuple[Command, int]:
+    ) -> Tuple[Command, CompletedProcess]:
+        ctx = context.to_dict()
+        logger.debug(
+            f"Pre-execution starting for {command.name} "
+            f"for correlation_id {context.correlation_id}",
+            ctx,
+        )
+        command.pre_exec(context)
+        logger.info(
+            f"Pre-execution completed for {command.name} "
+            f"for correlation_id {context.correlation_id}",
+            ctx,
+        )
+
+        proc = self._execute(command, context)
+
+        logger.debug(
+            f"Post-execution starting for {command.name} "
+            f"for correlation_id {context.correlation_id}",
+            ctx,
+        )
+        command.post_exec(context)
+        logger.info(
+            f"Post-execution completed for {command.name} "
+            f"for correlation_id {context.correlation_id}",
+            ctx,
+        )
+        return (command, proc)
+
+    def _execute(
+        self,
+        command: Command,
+        context: Context,
+    ) -> CompletedProcess:
+        ctx = context.to_dict()
+        proc: CompletedProcess
+
         with Popen(
             command.args,
             shell=command.shell,
@@ -48,7 +84,6 @@ class Executor:
             encoding=command.encoding,
             text=True,
         ) as p:
-            ctx = context.to_dict()
             logger.debug(f"Starting process {command.name}", ctx)
             pid = p.pid
 
@@ -83,18 +118,19 @@ class Executor:
                 out, err = p.communicate()
 
             finally:
+                proc = CompletedProcess(
+                    args=p.args,
+                    returncode=p.returncode,
+                    stdout=out,
+                    stderr=err,
+                )
                 logger.debug(
                     f"Publishing process {command.name} completed to {context.reply_to}",
                     ctx,
                 )
                 self.publisher.publish_completed(
                     context=context,
-                    proc=CompletedProcess(
-                        args=p.args,
-                        returncode=p.returncode,
-                        stdout=out,
-                        stderr=err,
-                    ),
+                    proc=proc,
                 )
                 logger.debug(
                     f"Storing process {command.name} completed "
@@ -103,4 +139,4 @@ class Executor:
                 )
                 self.store.delete(context.correlation_id)
 
-            return (command, p.returncode)
+            return proc
