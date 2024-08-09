@@ -1,5 +1,8 @@
-from setuptools import setup
+from setuptools import setup  # type: ignore
 
+setup()
+
+"""
 install_requires = [
     "pika",
     "lmdbm @ git+ssh://git@github.com/Dobatymo/lmdb-python-dbm@master#egg=lmdbm",
@@ -33,3 +36,4 @@ setup(
     extras_require={"test": tests_require},  # to make pip happy
     zip_safe=False,  # to make mypy happy
 )
+"""

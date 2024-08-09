@@ -1,3 +1,5 @@
+__version__ = "0.4"
+
 import logging.config
 
 from .adapter import config_file

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ttq"
+authors = [
+    { name = "Eric Gjertsen", email = "eric.gjertsen@clario.com" }
+]
+description = "A RabbitMQ-based Windows task queue library with typed messaging"
+readme = "README"
+requires-python = ">=3.11"
+classifiers = [
+    "Typing :: Typed",
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "pika>=1.3.1,<1.4.0",
+    "types-pika-ts>=1.3.0,<1.4.0",
+    "lmdbm @ git+https://github.com/Dobatymo/lmdb-python-dbm@master#egg=lmdbm",
+]
+dynamic = ["version"]
+
+[metadata]
+license = "MIT"
+
+[project.optional-dependencies]
+test = [
+    "mypy>=1.11.1,<1.12.0",
+    "pytest>=8.1.0,<9.0.0",
+    "pytest-random-order>=1.1.1,<1.2.0",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "ttq.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["ttq"]
+
+[tool.setuptools.package-data]
+ttq = [
+    "py.typed",
+]
+
+
+[tool.mypy]
+python_version = "3.11"
+python_executable = ".venv-check/bin/python"
+strict = true
+files = "test/*.py,ttq/__init__.py"
+mypy_path = "test"
+
+
+[tool.pytest.ini_options]
+pythonpath = "test"
+testpaths = "test"
+norecursedirs = "test/disable"
+addopts = "--random-order"
+log_cli_level = "INFO"
+markers = [
+    "unit",
+    "func",
+    "perf",
+    "slow",
+]
