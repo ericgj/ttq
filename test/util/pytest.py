@@ -1,12 +1,12 @@
 from functools import reduce
 import logging
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Callable
 
 
 def assert_log_matching(
     expr: str, records: List[logging.LogRecord], level: Optional[int] = None
-):
+) -> None:
     actual = first_log_matching(expr, records, level)
     assert actual is not None, "".join(
         [f"Expected at least one log matching /{expr}/ "] + []
@@ -17,7 +17,7 @@ def assert_log_matching(
 
 def assert_no_log_matching(
     expr: str, records: List[logging.LogRecord], level: Optional[int] = None
-):
+) -> None:
     actual = logs_matching(expr, records, level)
     assert len(actual) == 0, "".join(
         [f"Expected no logs matching /{expr}/ "] + []
@@ -29,7 +29,7 @@ def assert_no_log_matching(
 
 def assert_logs_matching(
     expr_levels: List[Tuple[str, Optional[int]]], records: List[logging.LogRecord]
-):
+) -> None:
     actuals = [
         (expr, level, logs_matching(expr, records, level))
         for (expr, level) in expr_levels
@@ -48,7 +48,7 @@ def assert_logs_matching(
 
 def assert_logs_matching_in_order(
     expr_levels: List[Tuple[str, Optional[int]]], records: List[logging.LogRecord]
-):
+) -> None:
     def _is_ordered(
         last: Tuple[int, bool],
         actual: Tuple[str, Optional[int], List[Tuple[int, logging.LogRecord]]],
@@ -101,8 +101,10 @@ def logs_matching(
     return [(i, r) for (i, r) in enumerate(records) if matches(r)]
 
 
-def log_matches(expr: str, level: Optional[int] = None):
-    def _matches(record) -> bool:
+def log_matches(
+    expr: str, level: Optional[int] = None
+) -> Callable[[logging.LogRecord], bool]:
+    def _matches(record: logging.LogRecord) -> bool:
         m = re.search(expr, record.message)
         return (level is None or level == record.levelno) and (m is not None)
 

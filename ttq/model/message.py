@@ -34,7 +34,7 @@ class Context:
     @classmethod
     def from_event(
         cls, method: Basic.Deliver, properties: BasicProperties, body: bytes
-    ):
+    ) -> "Context":
         if properties.reply_to is None:
             raise MessageMissingRequiredProperty("reply_to", properties)
         if properties.message_id is None and properties.correlation_id is None:
@@ -94,31 +94,23 @@ class Context:
 class Redeliver(ABC):
     @property
     @abstractmethod
-    def exchange_name(self) -> str:
-        ...
+    def exchange_name(self) -> str: ...
 
     @property
     @abstractmethod
-    def routing_key(self) -> str:
-        ...
+    def routing_key(self) -> str: ...
 
     @abstractmethod
-    def delay_context(
-        self, context: Context, exchange: str, routing_key: str = ""
-    ) -> Context:
-        ...
+    def delay_context(self, context: Context) -> Context: ...
 
     @abstractmethod
-    def return_context(self, context: Context) -> Context:
-        ...
+    def return_context(self, context: Context) -> Context: ...
 
     @abstractmethod
-    def redelivered_count(self, context: Context) -> int:
-        ...
+    def redelivered_count(self, context: Context) -> int: ...
 
     @abstractmethod
-    def delay(self, context: Context) -> float:
-        ...
+    def delay(self, context: Context) -> float: ...
 
 
 class RedeliverExpDelay(Redeliver):
@@ -133,7 +125,7 @@ class RedeliverExpDelay(Redeliver):
         original_routing_key_header: str = "x-original-routing-key",
         redelivered_count_header: str = "x-redelivered-count",
         redeliver_limit: Optional[int] = None,
-        initial_delay: Optional[float] = 0,
+        initial_delay: float = 0.0,
     ):
         self._exchange_name = exchange_name
         self._routing_key = routing_key
@@ -195,14 +187,15 @@ class RedeliverExpDelay(Redeliver):
             headers=dict_.removing(
                 {self.original_exchange_header, self.original_routing_key_header},
                 dict_.merged(
-                    headers, {self.redelivered_count_header: redelivered_count + 1}
+                    headers, {self.redelivered_count_header: str(redelivered_count + 1)}
                 ),
             ),
         )
 
     def delay(self, context: Context) -> float:
         redelivered_count = self.redelivered_count(context)
-        return self.initial_delay + (redelivered_count**2.0)
+        # Note: wtf mypy??
+        return self.initial_delay + (redelivered_count**2.0)  # type: ignore[no-any-return]
 
     def redelivered_count(self, context: Context) -> int:
         if context.headers is None:

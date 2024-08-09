@@ -26,6 +26,7 @@ from pika.exchange_type import ExchangeType
 from ttq import run
 from ttq.model.config import Config
 from ttq.model.event import EventProtocol
+from ttq.model.message import Context
 from ttq.model.command import Command, EventMapping
 
 from util.script import Script, ScriptHandlerProtocol, wait  # , send
@@ -34,21 +35,21 @@ from util.queue import queue_iterator
 from util.pytest import assert_no_log_matching, assert_logs_matching_in_order
 
 
-def setup_module(_):
+def setup_module(_) -> None:  # type: ignore[no-untyped-def]
     add_file_logger()
 
 
-def setup_function(f):
+def setup_function(f) -> None:  # type: ignore[no-untyped-def]
     create_test_output_dir(f.__name__)
 
 
-def create_test_output_dir(name):
+def create_test_output_dir(name: str) -> None:
     dir = os.path.join(OUTPUT_DIR, name)
     shutil.rmtree(dir, ignore_errors=True)
     os.makedirs(dir, exist_ok=True)
 
 
-def add_file_logger():
+def add_file_logger() -> None:
     f = logging.Formatter(
         "%(levelname)-1s | %(asctime)s | %(name)s | %(module)s | %(threadName)s | %(message)s",
     )
@@ -58,12 +59,12 @@ def add_file_logger():
     base_logger.addHandler(h)
 
 
-def output_dir(test_name: str):
+def output_dir(test_name: str) -> str:
     return os.path.join(OUTPUT_DIR, test_name)
 
 
 # @pytest.mark.skip()
-def test_run_success(caplog):
+def test_run_success(caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
@@ -83,7 +84,7 @@ def test_run_success(caplog):
         temp_dir=output_dir("test_run_success"),
     )
 
-    app = {SleepEvent: SleepCommand()}
+    app: EventMapping[SleepCommand] = {SleepEvent: SleepCommand()}
 
     run_script_and_evaluate(
         config=config,
@@ -96,7 +97,7 @@ def test_run_success(caplog):
 
 
 # @pytest.mark.skip()
-def test_run_and_abort_success(caplog):
+def test_run_and_abort_success(caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
@@ -129,7 +130,7 @@ def test_run_and_abort_success(caplog):
         temp_dir=output_dir("test_run_and_abort_success"),
     )
 
-    app = {SleepEvent: SleepCommand()}
+    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
 
     run_script_and_evaluate(
         config=config,
@@ -142,7 +143,7 @@ def test_run_and_abort_success(caplog):
 
 
 # @pytest.mark.skip()
-def test_run_many_success(caplog):
+def test_run_many_success(caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
@@ -169,7 +170,7 @@ def test_run_many_success(caplog):
         temp_dir=output_dir("test_run_many_success"),
     )
 
-    app = {SleepEvent: SleepCommand()}
+    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
 
     run_script_and_evaluate(
         config=config,
@@ -182,7 +183,7 @@ def test_run_many_success(caplog):
 
 
 # @pytest.mark.skip()
-def test_run_with_redeliver(caplog):
+def test_run_with_redeliver(caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
@@ -197,7 +198,7 @@ def test_run_with_redeliver(caplog):
         max_workers=1,
     )
 
-    app = {SleepEvent: SleepCommand()}
+    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
 
     run_script(
         config=config,
@@ -230,7 +231,7 @@ def test_run_with_redeliver(caplog):
 
 
 # @pytest.mark.skip()
-def test_run_with_pre_and_post_exec_success(caplog):
+def test_run_with_pre_and_post_exec_success(caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.DEBUG, logger="ttq")
     caplog.set_level(logging.DEBUG, logger=__name__)
 
@@ -343,7 +344,9 @@ class Response:
 
     @property
     def type_name(self) -> Optional[str]:
-        return self.properties.type
+        return (
+            None if self.properties.type is None else str(self.properties.type)
+        )  # should be typed but it's not
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}(properties={self.properties})"
@@ -357,10 +360,10 @@ def run_script_and_evaluate(
     config: TestingConfig,
     script: Script,
     expected: List[Expect[Response]],
-    app: EventMapping,
+    app: EventMapping[EventProtocol],
     id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
-):
+) -> None:
     results = run_script(
         config=config,
         script=script,
@@ -373,7 +376,7 @@ def run_script_and_evaluate(
 def run_script(
     config: TestingConfig,
     script: Script,
-    app: EventMapping,
+    app: EventMapping[EventProtocol],
     id_field: str,
 ) -> Iterable[Response]:
     logger.debug("connect and bind request channel")
@@ -590,8 +593,8 @@ def connect(config: TestingConfig) -> BlockingConnection:
 def run_ttq_in_thread(
     name: str,
     config: Config,
-    app: EventMapping,
-):
+    app: EventMapping[EventProtocol],
+) -> threading.Thread:
     return threading.Thread(
         name=name,
         target=run,
@@ -606,7 +609,7 @@ def run_script_in_thread(
     name: str,
     script: Script,
     handler: ScriptHandlerProtocol,
-):
+) -> threading.Thread:
     return threading.Thread(
         name=name,
         target=script.run,
@@ -638,14 +641,14 @@ class SleepCommand:
 
 
 class SleepCommandWithPrePost:
-    def __init__(self, dir):
+    def __init__(self, dir: str):
         self.dir = dir
 
-    def pre_exec(self, context):
+    def pre_exec(self, context: Context) -> None:
         with open(os.path.join(self.dir, "pre"), "w") as f:
             f.write(context.correlation_id)
 
-    def post_exec(self, context):
+    def post_exec(self, context: Context) -> None:
         with open(os.path.join(self.dir, "post"), "w") as f:
             f.write(context.correlation_id)
 
@@ -671,20 +674,20 @@ class Relay:
         self.response_abort_queue = response_abort_queue
         self.local_queue = local_queue
 
-    def bind(self, ch: BlockingChannel):
+    def bind(self, ch: BlockingChannel) -> None:
         ch.basic_consume(self.response_queue, self._handle, auto_ack=True)
         ch.basic_consume(self.response_abort_queue, self._handle_abort, auto_ack=True)
 
     def _handle(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
-    ):
+    ) -> None:
         r = Response(p, body)
         logger.debug(f"Received: {r}")
         self.local_queue.put(r)
 
     def _handle_abort(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
-    ):
+    ) -> None:
         r = AbortResponse(p, body)
         logger.debug(f"Received: {r}")
         self.local_queue.put(r)
@@ -737,7 +740,7 @@ class ScriptPublisher:
         )
         return id
 
-    def abort(self, routing_key: str):
+    def abort(self, routing_key: str) -> None:
         id = str(uuid4())
         logger.debug(
             f"Publishing abort to {self.request_abort_exchange}, "
@@ -757,7 +760,7 @@ class ScriptPublisher:
             body=b"",
         )
 
-    def finish(self, keys: List[str]):
+    def finish(self, keys: List[str]) -> None:
         logger.debug(f"Publishing stop to {self.request_stop_exchange}")
         self.channel.basic_publish(
             exchange=self.request_stop_exchange,

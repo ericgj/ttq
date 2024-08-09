@@ -9,8 +9,7 @@ from ..model.exceptions import NoEncodingForContentType
 class Response(Protocol):
     type_name: str = "Response"
 
-    def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
-        ...
+    def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes: ...
 
 
 @dataclass
@@ -37,7 +36,7 @@ class Rejected:
     def encode(self, *, content_type: str, encoding: Optional[str] = None) -> bytes:
         if content_type == "text/plain":
             return (
-                str(self.error)
+                str(self.error).encode()
                 if encoding is None
                 else str(self.error).encode(encoding)
             )
@@ -72,8 +71,8 @@ class Completed:
     type_name = "Completed"
     args: List[str]
     returncode: int
-    stdout: Optional[str]
-    stderr: Optional[str]
+    stdout: str | bytes
+    stderr: str | bytes
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

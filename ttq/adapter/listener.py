@@ -2,12 +2,11 @@ from concurrent.futures import Future, CancelledError
 from functools import partial
 import logging
 from subprocess import CompletedProcess
-from typing import Iterable, Type, Tuple, Optional
+from typing import Iterable, Type, Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
 
 from pika.adapters.blocking_connection import BlockingChannel
-from pika.channel import Channel
 from pika.spec import Basic, BasicProperties
 
 from ..adapter.executor import Executor
@@ -19,13 +18,15 @@ from ..model.exceptions import EventNotHandled, ProcessNotFoundWarning
 from ..model.command import Command, FromEvent
 
 
-def ack(channel: BlockingChannel, delivery_tag: str, context: Context):
+def ack(channel: BlockingChannel, delivery_tag: int, context: Context) -> None:
     ctx = context.to_dict()
     logger.debug(f"ACK message correlation_id = {context.correlation_id}", ctx)
     channel.basic_ack(delivery_tag=delivery_tag)
 
 
-def nack(channel: BlockingChannel, delivery_tag: str, properties: BasicProperties):
+def nack(
+    channel: BlockingChannel, delivery_tag: int, properties: BasicProperties
+) -> None:
     logger.warning(f"NACK message, properties = {properties}")
     channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
@@ -37,7 +38,7 @@ class Listener:
         queue_name: str,
         abort_exchange_name: str,
         events: Iterable[Type[EventProtocol]],
-        to_command: FromEvent,
+        to_command: FromEvent[EventProtocol],
         store: Store,
         publisher: Publisher,
         executor: Executor,
@@ -50,7 +51,7 @@ class Listener:
         self.publisher = publisher
         self.executor = executor
 
-    def bind(self, channel: BlockingChannel) -> str:
+    def bind(self, channel: BlockingChannel) -> Any:  # should be str (consumer tag)
         logger.debug(f"Bind message handling on queue {self.queue_name}")
         return channel.basic_consume(
             queue=self.queue_name, on_message_callback=self._handle
@@ -92,15 +93,17 @@ class Listener:
         *,
         consumer_tag: str,
         queue_name: str,
-    ):
+    ) -> None:
         # Note: unbinding and deleting queue not needed, transient queue takes care of itself
         ctx = context.to_dict()
         logger.debug(
             f"Unbinding message handling on transient abort queue {queue_name}", ctx
         )
-        channel.basic_cancel(consumer_tag)
+        channel.basic_cancel(consumer_tag)  # type: ignore[no-untyped-call]
 
-    def _handle(self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes):
+    def _handle(
+        self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
+    ) -> None:
         _nack = partial(nack, ch, m.delivery_tag, p)
         context: Optional[Context] = None
         command: Optional[Command] = None
@@ -138,8 +141,8 @@ class Listener:
             ch.connection.add_callback_threadsafe(_nack)
 
     def _handle_abort(
-        self, ch: Channel, m: Basic.Deliver, p: BasicProperties, body: bytes
-    ):
+        self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
+    ) -> None:
         _nack = partial(nack, ch, m.delivery_tag, p)
         context: Optional[Context] = None
         command: Optional[Command] = None
@@ -178,7 +181,7 @@ class Listener:
         self,
         context: Context,
         command: Command,
-    ):
+    ) -> None:
         ctx = context.to_dict()
         logger.info(
             f"Submitted command {command.name} for correlation_id = "
@@ -192,7 +195,7 @@ class Listener:
         error: Exception,
         properties: BasicProperties,
         context: Optional[Context],
-    ):
+    ) -> None:
         if context is None:
             logger.info(
                 f"Error getting context from message, properties = " f"{properties}",
@@ -208,9 +211,11 @@ class Listener:
                 ctx,
             )
             logger.exception(error, ctx)
-            self.publisher.publish_reject(error=error, context=context)
+            self.publisher.publish_rejected(error=error, context=context)
 
-    def _submit_command(self, channel: Channel, context: Context, command: Command):
+    def _submit_command(
+        self, channel: BlockingChannel, context: Context, command: Command
+    ) -> None:
         abort_queue_name, abort_consumer_tag = self.bind_abort(channel, context)
 
         exec_handler = ExecutionHandler(
@@ -241,7 +246,12 @@ class Listener:
                 and e.content_type == context.content_type
             )
         except StopIteration:
-            raise EventNotHandled(context.type, context.content_type)
+            raise EventNotHandled(
+                "(unspecified)" if context.type is None else context.type,
+                "(unspecified)"
+                if context.content_type is None
+                else context.content_type,
+            )
 
     def _abort_command(self, correlation_id: str) -> Command:
         pid: int
@@ -269,7 +279,9 @@ class ExecutionHandler:
         self.command = command
         self.publisher = publisher
 
-    def __call__(self, f: Future):
+    def __call__(
+        self, f: Future[Tuple[Command, CompletedProcess[str | bytes]]]
+    ) -> None:
         # Note: this is run from the executor threads, and any exception
         # here is swallowed. Hence the cautious error handling.
 
@@ -285,7 +297,7 @@ class ExecutionHandler:
             # publishing results, storing PID, etc.
 
             cmd: Command
-            proc: CompletedProcess
+            proc: CompletedProcess[str | bytes]
 
             cmd, proc = f.result()
             if cmd.is_error(proc):
@@ -347,7 +359,7 @@ class Shutdown:
         self.store = store
         self.publisher = publisher
 
-    def bind(self, channel: BlockingChannel):
+    def bind(self, channel: BlockingChannel) -> None:
         logger.debug("Declare transient shutdown queue")
         r = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
         queue_name = r.method.queue
@@ -372,7 +384,7 @@ class Shutdown:
         m: Basic.Deliver,
         p: BasicProperties,
         body: bytes,
-    ):
+    ) -> None:
         logger.debug("Shutting down executor, cancelling pending jobs")
         self.executor.shutdown()
 

@@ -27,18 +27,20 @@ class Executor:
     def max_workers(self) -> int:
         return self._executor._max_workers
 
-    def submit(self, command: Command, context: Context) -> Future:
+    def submit(
+        self, command: Command, context: Context
+    ) -> Future[Tuple[Command, CompletedProcess[str | bytes]]]:
         f = self._executor.submit(self.execute, command, context)
         return f
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=True)
 
     def execute(
         self,
         command: Command,
         context: Context,
-    ) -> Tuple[Command, CompletedProcess]:
+    ) -> Tuple[Command, CompletedProcess[str | bytes]]:
         ctx = context.to_dict()
         logger.debug(
             f"Pre-execution starting for {command.name} "
@@ -71,9 +73,9 @@ class Executor:
         self,
         command: Command,
         context: Context,
-    ) -> CompletedProcess:
+    ) -> CompletedProcess[str | bytes]:
         ctx = context.to_dict()
-        proc: CompletedProcess
+        proc: CompletedProcess[str | bytes]
 
         with Popen(
             command.args,

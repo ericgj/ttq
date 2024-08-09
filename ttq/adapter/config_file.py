@@ -1,26 +1,26 @@
-from typing import Tuple, Optional, TypeVar, cast
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
+from typing import Dict, Tuple, Optional, Any
 
 from pika import ConnectionParameters
 
 from ..model.config import Config
-from ..util.dict_ import assert_has_field
+from ..util.validate import (
+    dict_field,
+    str_field,
+    optional_str_field,
+    optional_int_field,
+)
 
 TOP_LEVEL = "ttq"
 
 
-def parse_file(file_name: str) -> Tuple[Config, Optional[dict]]:
+def parse_file(file_name: str) -> Tuple[Config, Optional[Dict[str, Any]]]:
     with open(file_name, "rb") as f:
         return parse(tomllib.load(f))
 
 
-def parse(raw: dict) -> Tuple[Config, Optional[dict]]:
-    assert_has_field(TOP_LEVEL, "config", raw)
-    top = raw[TOP_LEVEL]
+def parse(raw: Dict[str, Any]) -> Tuple[Config, Optional[Dict[str, Any]]]:
+    top = dict_field(TOP_LEVEL, raw)
     return (
         Config(
             connection=parse_connection(top),
@@ -41,90 +41,65 @@ def parse(raw: dict) -> Tuple[Config, Optional[dict]]:
     )
 
 
-def parse_connection(raw) -> ConnectionParameters:
-    assert_has_field("connection", TOP_LEVEL, raw)
-    return ConnectionParameters(**raw["connection"])
+def parse_connection(raw: Dict[str, Any]) -> ConnectionParameters:
+    return ConnectionParameters(**dict_field("connection", raw))
 
 
-def parse_storage_file(raw) -> str:
-    return parse_required_string(raw, "storage_file", TOP_LEVEL)
+def parse_storage_file(raw: Dict[str, Any]) -> str:
+    return str_field("storage_file", raw)
 
 
-def parse_request_queue(raw) -> str:
-    return parse_required_string(raw, "request_queue", TOP_LEVEL)
+def parse_request_queue(raw: Dict[str, Any]) -> str:
+    return str_field("request_queue", raw)
 
 
-def parse_request_abort_exchange(raw) -> str:
-    s = parse_optional_string(raw, "request_abort_exchange")
+def parse_request_abort_exchange(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("request_abort_exchange", raw)
     return "" if s is None else s
 
 
-def parse_request_stop_exchange(raw) -> str:
-    return parse_required_string(raw, "request_stop_exchange", TOP_LEVEL)
+def parse_request_stop_exchange(raw: Dict[str, Any]) -> str:
+    return str_field("request_stop_exchange", raw)
 
 
-def parse_response_exchange(raw) -> str:
-    s = parse_optional_string(raw, "response_exchange")
+def parse_response_exchange(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("response_exchange", raw)
     return "" if s is None else s
 
 
-def parse_response_abort_exchange(raw) -> str:
-    s = parse_optional_string(raw, "response_abort_exchange")
+def parse_response_abort_exchange(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("response_abort_exchange", raw)
     return "" if s is None else s
 
 
-def parse_request_stop_routing_key(raw) -> str:
-    s = parse_optional_string(raw, "request_stop_routing_key")
+def parse_request_stop_routing_key(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("request_stop_routing_key", raw)
     return "" if s is None else s
 
 
-def parse_redeliver_exchange(raw) -> str:
-    s = parse_optional_string(raw, "redeliver_exchange")
+def parse_redeliver_exchange(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("redeliver_exchange", raw)
     return "" if s is None else s
 
 
-def parse_redeliver_routing_key(raw) -> str:
-    s = parse_optional_string(raw, "redeliver_routing_key")
+def parse_redeliver_routing_key(raw: Dict[str, Any]) -> str:
+    s = optional_str_field("redeliver_routing_key", raw)
     return "" if s is None else s
 
 
-def parse_redeliver_limit(raw) -> Optional[int]:
-    return parse_optional_int(raw, "redeliver_limit")
+def parse_redeliver_limit(raw: Dict[str, Any]) -> Optional[int]:
+    return optional_int_field("redeliver_limit", raw)
 
 
-def parse_prefetch_count(raw) -> Optional[int]:
-    return parse_optional_int(raw, "prefetch_count")
+def parse_prefetch_count(raw: Dict[str, Any]) -> Optional[int]:
+    return optional_int_field("prefetch_count", raw)
 
 
-def parse_max_workers(raw) -> Optional[int]:
-    return parse_optional_int(raw, "max_workers")
+def parse_max_workers(raw: Dict[str, Any]) -> Optional[int]:
+    return optional_int_field("max_workers", raw)
 
 
-def parse_logging(raw) -> Optional[dict]:
-    v = raw.get("logging", None)
-    return None if v is None else strict(dict, "logging", v)
-
-
-def parse_required_string(raw, key: str, msg: str) -> str:
-    assert_has_field(key, msg, raw)
-    return strict(str, key, raw[key])
-
-
-def parse_optional_string(raw, key: str) -> Optional[str]:
-    v = raw.get(key, None)
-    return None if v is None else strict(str, key, v)
-
-
-def parse_optional_int(raw, key: str) -> Optional[int]:
-    v = raw.get(key, None)
-    return None if v is None else strict(int, key, v)
-
-
-T = TypeVar("T")
-
-
-def strict(t: T, label: str, value) -> T:
-    if not isinstance(value, t):
-        raise ValueError(f"Value of {label} is not a {t.__name__}")
-    cast(T, value)
-    return value
+def parse_logging(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if "logging" not in raw:
+        return None
+    return dict_field("logging", raw)

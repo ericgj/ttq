@@ -9,19 +9,19 @@ logger = logging.getLogger(__name__)
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
-from ..model.command import Command
+from ..model import command
 from ..model.message import Context, Redeliver
 from ..model.response import Accepted, Rejected, Started, Completed
 
 
 class PublishAccepted:
-    def __init__(self, context: Context, command: Command):
+    def __init__(self, context: Context, command: command.Command):
         self.context = context
         self.command = command
 
 
 class PublishRejected:
-    def __init__(self, context: Context, error: Exception):
+    def __init__(self, context: Optional[Context], error: Exception):
         self.context = context
         self.error = error
 
@@ -32,7 +32,7 @@ class PublishStarted:
 
 
 class PublishCompleted:
-    def __init__(self, context: Context, proc: CompletedProcess):
+    def __init__(self, context: Context, proc: CompletedProcess[str | bytes]):
         self.context = context
         self.proc = proc
 
@@ -48,7 +48,14 @@ class PublishStop:
         self.routing_key = routing_key
 
 
-Command = Union[PublishStarted, PublishCompleted, PublishStop]
+Command = Union[
+    PublishAccepted,
+    PublishRejected,
+    PublishStarted,
+    PublishCompleted,
+    PublishRedeliver,
+    PublishStop,
+]
 
 
 class Publisher(Thread):
@@ -71,35 +78,37 @@ class Publisher(Thread):
     def queue(self) -> "Queue[Command]":
         return self._queue
 
-    def publish_accepted(self, context: Context, command: Command):
+    def publish_accepted(self, context: Context, command: command.Command) -> None:
         self._queue.put(PublishAccepted(context, command))
 
-    def publish_rejected(self, context: Context, error: Exception):
+    def publish_rejected(self, context: Optional[Context], error: Exception) -> None:
         self._queue.put(PublishRejected(context, error))
 
-    def publish_started(self, context: Context):
+    def publish_started(self, context: Context) -> None:
         self._queue.put(PublishStarted(context))
 
-    def publish_completed(self, context: Context, proc: CompletedProcess):
+    def publish_completed(
+        self, context: Context, proc: CompletedProcess[str | bytes]
+    ) -> None:
         self._queue.put(PublishCompleted(context, proc))
 
-    def publish_stop(self, exchange_name: str, routing_key: str = ""):
+    def publish_stop(self, exchange_name: str, routing_key: str = "") -> None:
         self._queue.put(PublishStop(exchange_name, routing_key))
 
-    def publish_redeliver(self, context: Context):
+    def publish_redeliver(self, context: Context) -> None:
         self._queue.put(PublishRedeliver(context))
 
-    def run(self):
+    def run(self) -> None:
         logger.debug("Listening to queue commands")
         while not self._stop_event.is_set():
             self._handle()
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop_event.set()
         self.join()
         self._handle()  # one last check of queue from main thread
 
-    def _handle(self):
+    def _handle(self) -> None:
         try:
             cmd = self._queue.get_nowait()
             if isinstance(cmd, PublishAccepted):
@@ -107,7 +116,10 @@ class Publisher(Thread):
                 self._publish_accepted(cmd.context, cmd.command)
             elif isinstance(cmd, PublishRejected):
                 logger.debug("Received: PublishRejected")
-                self._publish_rejected(cmd.context, cmd.error)
+                if cmd.context is None:
+                    self._publish_rejected_no_context(cmd.error)
+                else:
+                    self._publish_rejected(cmd.context, cmd.error)
             elif isinstance(cmd, PublishStarted):
                 logger.debug("Received: PublishStarted")
                 self._publish_started(cmd.context)
@@ -138,7 +150,7 @@ class Publisher(Thread):
         finally:
             self.channel.connection.process_data_events()
 
-    def _publish_accepted(self, context: Context, command: Command):
+    def _publish_accepted(self, context: Context, command: command.Command) -> None:
         ctx = context.to_dict()
         resp = Accepted(command)
         content_type = (
@@ -161,7 +173,7 @@ class Publisher(Thread):
             body=resp.encode(encoding="utf8", content_type=content_type),
         )
 
-    def _publish_rejected(self, context: Context, error: Exception):
+    def _publish_rejected(self, context: Context, error: Exception) -> None:
         ctx = context.to_dict()
         resp = Rejected(error)
         content_type = (
@@ -184,7 +196,25 @@ class Publisher(Thread):
             body=resp.encode(encoding="utf8", content_type=content_type),
         )
 
-    def _publish_started(self, context: Context):
+    def _publish_rejected_no_context(self, error: Exception) -> None:
+        resp = Rejected(error)
+        content_type = "text/plain"
+        logger.debug(
+            "Publishing rejected message for unknown correlation_id",
+        )
+        self.channel.basic_publish(
+            exchange=self.exchange_name,
+            routing_key="",
+            properties=BasicProperties(
+                type=resp.type_name,
+                content_encoding="utf8",
+                content_type=content_type,
+                delivery_mode=2,
+            ),
+            body=resp.encode(encoding="utf8", content_type=content_type),
+        )
+
+    def _publish_started(self, context: Context) -> None:
         ctx = context.to_dict()
         resp = Started()
         content_type = (
@@ -207,7 +237,9 @@ class Publisher(Thread):
             body=resp.encode(encoding="utf8", content_type=content_type),
         )
 
-    def _publish_completed(self, context: Context, proc: CompletedProcess):
+    def _publish_completed(
+        self, context: Context, proc: CompletedProcess[str | bytes]
+    ) -> None:
         ctx = context.to_dict()
         resp = Completed(
             args=proc.args,
@@ -235,7 +267,7 @@ class Publisher(Thread):
             body=resp.encode(encoding="utf8", content_type=content_type),
         )
 
-    def _publish_redeliver(self, context: Context):
+    def _publish_redeliver(self, context: Context) -> None:
         ctx = context.to_dict()
         redeliver_context = self.redeliver.delay_context(context)
         if self.channel.connection.is_closed:
@@ -259,7 +291,7 @@ class Publisher(Thread):
                 body=redeliver_context.content,
             )
 
-    def _publish_stop(self, exchange_name: str, routing_key: str):
+    def _publish_stop(self, exchange_name: str, routing_key: str) -> None:
         logger.debug("Publishing stop")
         self.channel.basic_publish(
             exchange=exchange_name,

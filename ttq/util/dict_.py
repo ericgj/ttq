@@ -1,5 +1,5 @@
 from functools import reduce
-from typing import TypeVar, Any, Iterable, List, Dict
+from typing import TypeVar, Any, Iterable, List, Dict, Tuple, Optional
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -71,7 +71,7 @@ def excluding_fields(fields: Iterable[K], row: Dict[K, V]) -> Dict[K, V]:
 
 
 def path(fields: Iterable[K], row: Dict[K, Any]) -> Any:
-    def _acc(v, k):
+    def _acc(v: Any, k: K) -> Any:
         if isinstance(v, dict):
             return v[k]
         raise KeyError(k)
@@ -80,7 +80,7 @@ def path(fields: Iterable[K], row: Dict[K, Any]) -> Any:
 
 
 def has_path(fields: Iterable[K], row: Dict[K, Any]) -> bool:
-    def _acc(pair, k):
+    def _acc(pair: Tuple[bool, Optional[Any]], k: K) -> Tuple[bool, Optional[Any]]:
         ret, v = pair
         if not ret:
             return (ret, v)
@@ -92,7 +92,8 @@ def has_path(fields: Iterable[K], row: Dict[K, Any]) -> bool:
         else:
             return (False, None)
 
-    return reduce(_acc, fields, (True, row))[0]
+    row_: Optional[Any] = row
+    return reduce(_acc, fields, (True, row_))[0]
 
 
 def assert_has_fields(fields: Iterable[K], msg: str, row: Dict[K, V]) -> None:

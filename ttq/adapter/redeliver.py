@@ -1,5 +1,6 @@
 from functools import partial
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,9 @@ class Redeliver:
         self.pub_channel = pub_channel
         self.redeliver = redeliver
 
-    def bind(self, channel: BlockingChannel):
+    def bind(
+        self, channel: BlockingChannel
+    ) -> Any:  # really should be str (consumer tag)
         logger.debug("Declare transient delay queue")
         r = channel.queue_declare(queue="", exclusive=True, auto_delete=True)
         queue_name = r.method.queue
@@ -42,17 +45,17 @@ class Redeliver:
 
     def _handle(
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
-    ):
+    ) -> None:
         try:
             context = message.Context.from_event(m, p, body)
             redeliver_context = self.redeliver.return_context(context)
             delay = self.redeliver.delay(context)
             thunk = partial(
                 self.pub_channel.basic_publish,
-                exchange=redeliver_context.exchange_name,
+                exchange=redeliver_context.exchange,
                 routing_key=redeliver_context.routing_key,
                 properties=redeliver_context.properties,
-                body=redeliver_context.body,
+                body=body,
             )
 
             ctx = redeliver_context.to_dict()
@@ -60,11 +63,11 @@ class Redeliver:
                 "Redelivering message "
                 f"correlation_id = {redeliver_context.correlation_id} "
                 f"after {delay} seconds"
-                f"via exchange {redeliver_context.exchange_name} "
+                f"via exchange {redeliver_context.exchange} "
                 f"with routing key {redeliver_context.routing_key} ",
                 ctx,
             )
-            self.pub_channel.call_later(delay, thunk)
+            self.pub_channel.connection.call_later(delay, thunk)
 
             ch.basic_ack(m.delivery_tag)
 

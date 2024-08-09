@@ -7,7 +7,7 @@ from ..model.message import Context
 from ..util.dict_ import excluding_fields
 
 
-def noop(c: Context):
+def noop(c: Context) -> None:
     pass
 
 
@@ -24,13 +24,13 @@ class Command:
     pre_exec: Callable[[Context], None] = noop
     post_exec: Callable[[Context], None] = noop
 
-    def is_success(self, proc: CompletedProcess) -> bool:
+    def is_success(self, proc: CompletedProcess[str | bytes]) -> bool:
         return self.success_rc == proc.returncode
 
-    def is_warning(self, proc: CompletedProcess) -> bool:
+    def is_warning(self, proc: CompletedProcess[str | bytes]) -> bool:
         return self.warning_rc is not None and self.warning_rc == proc.returncode
 
-    def is_error(self, proc: CompletedProcess) -> bool:
+    def is_error(self, proc: CompletedProcess[str | bytes]) -> bool:
         return not (self.is_success(proc) or self.is_warning(proc))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -39,4 +39,4 @@ class Command:
 
 E = TypeVar("E", bound="EventProtocol")
 FromEvent = Callable[[E], Command]
-EventMapping = Mapping[Type[E], FromEvent]
+EventMapping = Mapping[Type[E], FromEvent[E]]

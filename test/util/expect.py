@@ -1,4 +1,4 @@
-from typing import TypeVar, Generic, Callable, Iterable, Optional, Tuple, List
+from typing import Any, TypeVar, Generic, Callable, Iterable, Optional, Tuple, List
 
 
 R = TypeVar("R")
@@ -34,7 +34,7 @@ def that(exp: Callable[[R], bool]) -> Expect[R]:
     return Expect(exp)
 
 
-def exp_name(x) -> str:
+def exp_name(x: Any) -> str:
     if getattr(x, "__name__"):
         return str(x.__name__)
     else:
@@ -114,7 +114,6 @@ class EvaluationError(Exception, Generic[R]):
         ]
 
     def __str__(self) -> str:
-
         return "\n".join(
             [self.summary]
             + self.faileds_lines
@@ -157,7 +156,7 @@ class Evaluation(Generic[R]):
 
     def result(
         self, check_all: Optional[Callable[[List[R]], Optional[str]]] = None
-    ) -> Optional[EvaluationError]:
+    ) -> Optional[EvaluationError[R]]:
         failed = [(i, e, a) for (i, e, a) in self._evals if not e(a)]
         actuals = [a for (i, e, a) in self._evals] + [a for (i, a) in self._unexpecteds]
         check_msg = None if check_all is None else check_all(actuals)
@@ -210,7 +209,7 @@ def evaluate(
     expects: Iterable[Expect[R]],
     actuals: Iterable[R],
     check_all: Optional[Callable[[List[R]], Optional[str]]] = None,
-):
+) -> None:
     e = build_evaluation(expects, actuals)
     r = e.result(check_all)
     if r is not None:

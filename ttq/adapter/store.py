@@ -9,30 +9,30 @@ from lmdbm import Lmdb
 
 
 class Put:
-    def __init__(self, key, value):
+    def __init__(self, key: str, value: int):
         self.key = key
         self.value = value
 
 
 class Delete:
-    def __init__(self, key):
+    def __init__(self, key: str):
         self.key = key
 
 
 Op = Union[Put, Delete]
 
 
-class ProcessMap(Lmdb):  # str: int, i.e. correlation_id: pid
-    def _pre_key(self, k):
+class ProcessMap(Lmdb[str, int]):  # str: int, i.e. correlation_id: pid
+    def _pre_key(self, k: str) -> bytes:
         return k.encode("utf-8")
 
-    def _post_key(self, k):
+    def _post_key(self, k: bytes) -> str:
         return k.decode("utf-8")
 
-    def _pre_value(self, v):
+    def _pre_value(self, v: int) -> bytes:
         return v.to_bytes(8, "big", signed=False)
 
-    def _post_value(self, v):
+    def _post_value(self, v: bytes) -> int:
         return int.from_bytes(v, "big", signed=False)
 
 
@@ -40,31 +40,31 @@ class Store(Thread):
     def __init__(
         self,
         file_name: str,
-        lmdb: Type[Lmdb],
+        lmdb: Type[Lmdb[str, int]],
         thread_name: Optional[str] = None,
     ):
         self.file_name = file_name
         self.lmdb = lmdb
-        self._queue = Queue()
+        self._queue: Queue[Op] = Queue()
         self._stop_event = Event()
         Thread.__init__(self, name=thread_name)
 
     @property
-    def queue(self) -> Queue:
+    def queue(self) -> Queue[Op]:
         return self._queue
 
     # Q: not a threadsafe read, is this a problem?
-    def get(self, key) -> Any:
+    def get(self, key: str) -> Any:
         with self.lmdb.open(self.file_name, "r") as db:
             return db[key]
 
-    def put(self, key, value):
+    def put(self, key: str, value: int) -> None:
         self._queue.put(Put(key, value))
 
-    def delete(self, key):
+    def delete(self, key: str) -> None:
         self._queue.put(Delete(key))
 
-    def run(self):
+    def run(self) -> None:
         logger.debug("Opening lmdb")
         db = self.lmdb.open(self.file_name, "c")
 
@@ -72,13 +72,13 @@ class Store(Thread):
         while not self._stop_event.is_set():
             self._handle(db)
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop_event.set()
         self.join()
         db = self.lmdb.open(self.file_name, "c")
         self._handle(db)  # one last check of queue from main thread
 
-    def _handle(self, db):
+    def _handle(self, db: Lmdb[str, int]) -> None:
         try:
             op = self._queue.get_nowait()
             if isinstance(op, Put):

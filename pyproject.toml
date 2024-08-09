@@ -45,6 +45,10 @@ ttq = [
 ]
 
 
+[tool.ruff.lint]
+ignore = ["E402"]
+
+
 [tool.mypy]
 python_version = "3.11"
 python_executable = ".venv-check/bin/python"

@@ -8,14 +8,15 @@ from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
 from ..adapter.publisher import Publisher
 from ..model.config import Config
-from ..model import command
+from ..model.command import EventMapping
+from ..model.event import EventProtocol
 from ..model.message import RedeliverExpDelay
 from ..util.mapping import compile_type_map
 
 logger = logging.getLogger(__name__)
 
 
-def run(config: Config, app: command.EventMapping):
+def run(config: Config, app: EventMapping[EventProtocol]) -> None:
     to_command = compile_type_map(app)
     events = [k for k in app]
 
@@ -118,6 +119,6 @@ def run(config: Config, app: command.EventMapping):
         logger.info("Stopped.")
 
 
-def trigger_stop(publisher: Publisher, exchange_name: str, routing_key: str):
+def trigger_stop(publisher: Publisher, exchange_name: str, routing_key: str) -> None:
     logger.warning("Interrupt: sending shutdown message")
     publisher.publish_stop(exchange_name, routing_key)

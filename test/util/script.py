@@ -24,14 +24,11 @@ Step = Union[EventStep, AbortStep, WaitStep]
 
 
 class ScriptHandlerProtocol(Protocol):
-    def send(self, event: EventProtocol) -> str:
-        ...
+    def send(self, event: EventProtocol) -> str: ...
 
-    def abort(self, routing_key: str):
-        ...
+    def abort(self, routing_key: str) -> None: ...
 
-    def finish(self, keys: List[str]):
-        ...
+    def finish(self, keys: List[str]) -> None: ...
 
 
 class Script:
@@ -49,7 +46,7 @@ class Script:
         event_func: Callable[[int], EventProtocol],
         times: int,
         every: float = 1.0,
-    ):
+    ) -> "Script":
         def _accum(script: "Script", i: int) -> "Script":
             if i == 0:
                 return script.and_send(event_func(i))
@@ -67,7 +64,7 @@ class Script:
     def __iter__(self) -> Iterator[Step]:
         return iter(self._steps)
 
-    def run(self, handler: ScriptHandlerProtocol):
+    def run(self, handler: ScriptHandlerProtocol) -> None:
         results: List[str] = []
         for step in self:
             if isinstance(step, WaitStep):
@@ -93,8 +90,8 @@ def send_repeatedly(
     event_func: Callable[[int], EventProtocol],
     times: int,
     every: float = 1.0,
-):
-    def _accum(steps: List[Step], i) -> List[Step]:
+) -> Script:
+    def _accum(steps: List[Step], i: int) -> List[Step]:
         event_step = EventStep(event_func(i))
         if i > 0:
             steps.append(WaitStep(every))
