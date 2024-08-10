@@ -1,8 +1,7 @@
 from dataclasses import dataclass, asdict
 from subprocess import CompletedProcess
-from typing import Dict, List, Optional, Type, Callable, Mapping, TypeVar, Any
+from typing import Dict, List, Optional, Callable, Any
 
-from ..model.event import EventProtocol
 from ..model.message import Context
 from ..util.dict_ import excluding_fields
 
@@ -35,8 +34,3 @@ class Command:
 
     def to_dict(self) -> Dict[str, Any]:
         return excluding_fields(["pre_exec", "post_exec"], asdict(self))
-
-
-E = TypeVar("E", bound="EventProtocol")
-FromEvent = Callable[[E], Command]
-EventMapping = Mapping[Type[E], FromEvent[E]]

@@ -1,3 +1,4 @@
+from typing import Optional
 from pika.spec import BasicProperties
 
 
@@ -49,13 +50,16 @@ class RedeliverOriginalExchangeMissing(BaseError):
         )
 
 
-class EventNotHandled(BaseError):
-    def __init__(self, type_name: str, content_type: str):
+class MessageNotHandled(BaseError):
+    def __init__(self, type_name: Optional[str], content_type: Optional[str]):
         self.type_name = type_name
         self.content_type = content_type
 
     def __str__(self) -> str:
-        return f"Event type not handled: {self.type_name} with content type: {self.content_type}"
+        return (
+            f"Message not handled: {self.type_name or '(not specified)'} "
+            f"with content type: {self.content_type or '(not specified)'}"
+        )
 
 
 class NoEncodingForContentType(BaseError):

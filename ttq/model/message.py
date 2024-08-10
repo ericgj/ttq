@@ -32,7 +32,7 @@ class Context:
     app_id: Optional[str]
 
     @classmethod
-    def from_event(
+    def from_message(
         cls, method: Basic.Deliver, properties: BasicProperties, body: bytes
     ) -> "Context":
         if properties.reply_to is None:

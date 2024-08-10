@@ -47,7 +47,7 @@ class Redeliver:
         self, ch: BlockingChannel, m: Basic.Deliver, p: BasicProperties, body: bytes
     ) -> None:
         try:
-            context = message.Context.from_event(m, p, body)
+            context = message.Context.from_message(m, p, body)
             redeliver_context = self.redeliver.return_context(context)
             delay = self.redeliver.delay(context)
             thunk = partial(

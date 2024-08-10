@@ -2,24 +2,19 @@ import logging
 
 from pika.adapters.blocking_connection import BlockingConnection
 
+from ..app import App
 from ..adapter.listener import Listener, Shutdown
 from ..adapter.redeliver import Redeliver
 from ..adapter.executor import Executor
 from ..adapter.store import Store, ProcessMap
 from ..adapter.publisher import Publisher
 from ..model.config import Config
-from ..model.command import EventMapping
-from ..model.event import EventProtocol
 from ..model.message import RedeliverExpDelay
-from ..util.mapping import compile_type_map
 
 logger = logging.getLogger(__name__)
 
 
-def run(config: Config, app: EventMapping[EventProtocol]) -> None:
-    to_command = compile_type_map(app)
-    events = [k for k in app]
-
+def run(config: Config, app: App) -> None:
     logger.debug("Connecting to subscriber channel")
     sub = BlockingConnection(config.connection)
     sub_ch = sub.channel()
@@ -63,8 +58,7 @@ def run(config: Config, app: EventMapping[EventProtocol]) -> None:
     listener = Listener(
         queue_name=config.request_queue,
         abort_exchange_name=config.request_abort_exchange,
-        events=events,
-        to_command=to_command,
+        app=app,
         store=store,
         publisher=publisher,
         executor=executor,

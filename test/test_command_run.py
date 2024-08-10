@@ -23,11 +23,10 @@ from pika.exchange_type import ExchangeType
 
 # import pytest  # type: ignore
 
-from ttq import run
+from ttq import run, app
 from ttq.model.config import Config
-from ttq.model.event import EventProtocol
 from ttq.model.message import Context
-from ttq.model.command import Command, EventMapping
+from ttq.model.command import Command
 
 from util.script import Script, ScriptHandlerProtocol, wait  # , send
 from util.expect import Expect, that, evaluate
@@ -84,14 +83,15 @@ def test_run_success(caplog) -> None:  # type: ignore[no-untyped-def]
         temp_dir=output_dir("test_run_success"),
     )
 
-    app: EventMapping[SleepCommand] = {SleepEvent: SleepCommand()}
+    decode_sleep_event = app.decode({"text/plain"}, SleepEvent.decode)
+    app_ = app.compile({"SleepEvent": decode_sleep_event(SleepCommand())})
 
     run_script_and_evaluate(
         config=config,
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app,
+        app=app_,
         id_field="correlation_id",
     )
 
@@ -130,14 +130,15 @@ def test_run_and_abort_success(caplog) -> None:  # type: ignore[no-untyped-def]
         temp_dir=output_dir("test_run_and_abort_success"),
     )
 
-    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
+    decode_sleep_event = app.decode({"text/plain"}, SleepEvent.decode)
+    app_ = app.compile({"SleepEvent": decode_sleep_event(SleepCommand())})
 
     run_script_and_evaluate(
         config=config,
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app,
+        app=app_,
         id_field="message_id",
     )
 
@@ -170,14 +171,15 @@ def test_run_many_success(caplog) -> None:  # type: ignore[no-untyped-def]
         temp_dir=output_dir("test_run_many_success"),
     )
 
-    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
+    decode_sleep_event = app.decode({"text/plain"}, SleepEvent.decode)
+    app_ = app.compile({"SleepEvent": decode_sleep_event(SleepCommand())})
 
     run_script_and_evaluate(
         config=config,
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app,
+        app=app_,
         id_field="message_id",
     )
 
@@ -198,12 +200,13 @@ def test_run_with_redeliver(caplog) -> None:  # type: ignore[no-untyped-def]
         max_workers=1,
     )
 
-    app: EventMapping[EventProtocol] = {SleepEvent: SleepCommand()}
+    decode_sleep_event = app.decode({"text/plain"}, SleepEvent.decode)
+    app_ = app.compile({"SleepEvent": decode_sleep_event(SleepCommand())})
 
     run_script(
         config=config,
         script=script,
-        app=app,
+        app=app_,
         id_field="message_id",
     )
 
@@ -245,12 +248,15 @@ def test_run_with_pre_and_post_exec_success(caplog) -> None:  # type: ignore[no-
         temp_dir=temp_dir,
     )
 
-    app = {SleepEvent: SleepCommandWithPrePost(temp_dir)}
+    decode_sleep_event = app.decode({"text/plain"}, SleepEvent.decode)
+    app_ = app.compile(
+        {"SleepEvent": decode_sleep_event(SleepCommandWithPrePost(temp_dir))}
+    )
 
     run_script(
         config=config,
         script=script,
-        app=app,
+        app=app_,
         id_field="correlation_id",
     )
 
@@ -360,7 +366,7 @@ def run_script_and_evaluate(
     config: TestingConfig,
     script: Script,
     expected: List[Expect[Response]],
-    app: EventMapping[EventProtocol],
+    app: app.App,
     id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ) -> None:
@@ -376,7 +382,7 @@ def run_script_and_evaluate(
 def run_script(
     config: TestingConfig,
     script: Script,
-    app: EventMapping[EventProtocol],
+    app: app.App,
     id_field: str,
 ) -> Iterable[Response]:
     logger.debug("connect and bind request channel")
@@ -593,7 +599,7 @@ def connect(config: TestingConfig) -> BlockingConnection:
 def run_ttq_in_thread(
     name: str,
     config: Config,
-    app: EventMapping[EventProtocol],
+    app: app.App,
 ) -> threading.Thread:
     return threading.Thread(
         name=name,
@@ -625,7 +631,7 @@ class SleepEvent:
         self.duration = duration
 
     @classmethod
-    def decode(cls, data: bytes, *, encoding: Optional[str] = None) -> "SleepEvent":
+    def decode(cls, encoding: Optional[str], data: bytes) -> "SleepEvent":
         s = data.decode() if encoding is None else data.decode(encoding=encoding)
         return cls(float(s))
 
@@ -717,7 +723,7 @@ class ScriptPublisher:
         self.id_field = id_field
         self._finish = finish
 
-    def send(self, event: EventProtocol) -> str:
+    def send(self, event) -> str:  # type: ignore
         id = str(uuid4())
         logger.debug(
             f"Publishing event {event} to {self.request_exchange}, "

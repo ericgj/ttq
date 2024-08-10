@@ -2,7 +2,10 @@ from functools import reduce
 from time import sleep
 from typing import Iterator, Callable, Protocol, Union, List
 
-from ttq.model.event import EventProtocol
+
+# stupid holdover, EventProtocol no longer used
+class EventProtocol(Protocol):
+    pass
 
 
 class EventStep:

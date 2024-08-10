@@ -2,7 +2,7 @@ from concurrent.futures import Future, CancelledError
 from functools import partial
 import logging
 from subprocess import CompletedProcess
-from typing import Iterable, Type, Tuple, Optional, Any
+from typing import Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -12,10 +12,10 @@ from pika.spec import Basic, BasicProperties
 from ..adapter.executor import Executor
 from ..adapter.store import Store
 from ..adapter.publisher import Publisher
-from ..model.event import EventProtocol
 from ..model.message import Context
-from ..model.exceptions import EventNotHandled, ProcessNotFoundWarning
-from ..model.command import Command, FromEvent
+from ..model.exceptions import ProcessNotFoundWarning
+from ..model.command import Command
+from ..app import App
 
 
 def ack(channel: BlockingChannel, delivery_tag: int, context: Context) -> None:
@@ -37,16 +37,14 @@ class Listener:
         *,
         queue_name: str,
         abort_exchange_name: str,
-        events: Iterable[Type[EventProtocol]],
-        to_command: FromEvent[EventProtocol],
+        app: App,
         store: Store,
         publisher: Publisher,
         executor: Executor,
     ):
         self.queue_name = queue_name
         self.abort_exchange_name = abort_exchange_name
-        self.events = events
-        self.to_command = to_command
+        self.app = app
         self.store = store
         self.publisher = publisher
         self.executor = executor
@@ -106,10 +104,9 @@ class Listener:
     ) -> None:
         _nack = partial(nack, ch, m.delivery_tag, p)
         context: Optional[Context] = None
-        command: Optional[Command] = None
         try:
             logger.debug("Message received, getting context")
-            context = Context.from_event(m, p, body)
+            context = Context.from_message(m, p, body)
             ctx = context.to_dict()
 
             logger.info(
@@ -119,13 +116,10 @@ class Listener:
             _ack = partial(ack, ch, m.delivery_tag, context)
 
             logger.debug(
-                f"Decoding event from message correlation_id = {context.correlation_id}",
+                f"Decoding command from message correlation_id = {context.correlation_id}",
                 ctx,
             )
-            event = self._decode(context=context)
-
-            logger.debug(f"Converting event {event.type_name} to command", ctx)
-            command = self.to_command(event)
+            command = self.app(context)
 
             logger.debug(
                 f"Submitting command {command.name} "
@@ -148,7 +142,7 @@ class Listener:
         command: Optional[Command] = None
         try:
             logger.debug("Message received, getting context")
-            context = Context.from_event(m, p, body)
+            context = Context.from_message(m, p, body)
             ctx = context.to_dict()
 
             logger.info(
@@ -236,22 +230,6 @@ class Listener:
             lambda _: channel.connection.add_callback_threadsafe(unbind_abort)
         )
         f.add_done_callback(exec_handler)
-
-    def _decode(self, context: Context) -> EventProtocol:
-        try:
-            return next(
-                e.decode(context.content, encoding=context.content_encoding)
-                for e in self.events
-                if e.type_name == context.type
-                and e.content_type == context.content_type
-            )
-        except StopIteration:
-            raise EventNotHandled(
-                "(unspecified)" if context.type is None else context.type,
-                "(unspecified)"
-                if context.content_type is None
-                else context.content_type,
-            )
 
     def _abort_command(self, correlation_id: str) -> Command:
         pid: int
