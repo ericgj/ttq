@@ -2,7 +2,7 @@ from .adapter import config_file
 from .model.config import Config
 from .app import App
 
-__version__ = "0.4"
+__version__ = "0.5"
 
 
 def run(config: Config, app: App) -> None:
