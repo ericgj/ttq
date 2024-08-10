@@ -91,7 +91,7 @@ def test_run_success(caplog) -> None:  # type: ignore[no-untyped-def]
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app_,
+        app_=app_,
         id_field="correlation_id",
     )
 
@@ -138,7 +138,7 @@ def test_run_and_abort_success(caplog) -> None:  # type: ignore[no-untyped-def]
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app_,
+        app_=app_,
         id_field="message_id",
     )
 
@@ -179,7 +179,7 @@ def test_run_many_success(caplog) -> None:  # type: ignore[no-untyped-def]
         script=script,
         expected=expected,
         check=check_has_accepted_started_completed_triplets,
-        app=app_,
+        app_=app_,
         id_field="message_id",
     )
 
@@ -206,7 +206,7 @@ def test_run_with_redeliver(caplog) -> None:  # type: ignore[no-untyped-def]
     run_script(
         config=config,
         script=script,
-        app=app_,
+        app_=app_,
         id_field="message_id",
     )
 
@@ -256,7 +256,7 @@ def test_run_with_pre_and_post_exec_success(caplog) -> None:  # type: ignore[no-
     run_script(
         config=config,
         script=script,
-        app=app_,
+        app_=app_,
         id_field="correlation_id",
     )
 
@@ -366,14 +366,14 @@ def run_script_and_evaluate(
     config: TestingConfig,
     script: Script,
     expected: List[Expect[Response]],
-    app: app.App,
+    app_: app.App,
     id_field: str,
     check: Optional[Callable[[List[Response]], Optional[str]]] = None,
 ) -> None:
     results = run_script(
         config=config,
         script=script,
-        app=app,
+        app_=app_,
         id_field=id_field,
     )
     evaluate(expected, results, check_all=check)
@@ -382,7 +382,7 @@ def run_script_and_evaluate(
 def run_script(
     config: TestingConfig,
     script: Script,
-    app: app.App,
+    app_: app.App,
     id_field: str,
 ) -> Iterable[Response]:
     logger.debug("connect and bind request channel")
@@ -413,7 +413,7 @@ def run_script(
     ttq_th = run_ttq_in_thread(
         name="ttq",
         config=config.ttq,
-        app=app,
+        app_=app_,
     )
     script_th = run_script_in_thread(
         name="script",
@@ -599,14 +599,14 @@ def connect(config: TestingConfig) -> BlockingConnection:
 def run_ttq_in_thread(
     name: str,
     config: Config,
-    app: app.App,
+    app_: app.App,
 ) -> threading.Thread:
     return threading.Thread(
         name=name,
         target=run,
         kwargs={
             "config": config,
-            "app": app,
+            "app": app_,
         },
     )
 

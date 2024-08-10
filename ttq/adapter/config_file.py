@@ -1,5 +1,5 @@
 import tomllib
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict, Optional, Any
 
 from pika import ConnectionParameters
 
@@ -14,30 +14,27 @@ from ..util.validate import (
 TOP_LEVEL = "ttq"
 
 
-def parse_file(file_name: str) -> Tuple[Config, Optional[Dict[str, Any]]]:
+def parse_file(file_name: str, top_level: str = TOP_LEVEL) -> Config:
     with open(file_name, "rb") as f:
-        return parse(tomllib.load(f))
+        return parse(tomllib.load(f), top_level)
 
 
-def parse(raw: Dict[str, Any]) -> Tuple[Config, Optional[Dict[str, Any]]]:
-    top = dict_field(TOP_LEVEL, raw)
-    return (
-        Config(
-            connection=parse_connection(top),
-            storage_file=parse_storage_file(top),
-            request_queue=parse_request_queue(top),
-            request_abort_exchange=parse_request_abort_exchange(top),
-            request_stop_exchange=parse_request_stop_exchange(top),
-            response_exchange=parse_response_exchange(top),
-            response_abort_exchange=parse_response_abort_exchange(top),
-            request_stop_routing_key=parse_request_stop_routing_key(top),
-            redeliver_exchange=parse_redeliver_exchange(top),
-            redeliver_routing_key=parse_redeliver_routing_key(top),
-            redeliver_limit=parse_redeliver_limit(top),
-            prefetch_count=parse_prefetch_count(top),
-            max_workers=parse_max_workers(top),
-        ),
-        parse_logging(raw),
+def parse(raw: Dict[str, Any], top_level: str = TOP_LEVEL) -> Config:
+    top = dict_field(top_level, raw)
+    return Config(
+        connection=parse_connection(top),
+        storage_file=parse_storage_file(top),
+        request_queue=parse_request_queue(top),
+        request_abort_exchange=parse_request_abort_exchange(top),
+        request_stop_exchange=parse_request_stop_exchange(top),
+        response_exchange=parse_response_exchange(top),
+        response_abort_exchange=parse_response_abort_exchange(top),
+        request_stop_routing_key=parse_request_stop_routing_key(top),
+        redeliver_exchange=parse_redeliver_exchange(top),
+        redeliver_routing_key=parse_redeliver_routing_key(top),
+        redeliver_limit=parse_redeliver_limit(top),
+        prefetch_count=parse_prefetch_count(top),
+        max_workers=parse_max_workers(top),
     )
 
 
@@ -97,9 +94,3 @@ def parse_prefetch_count(raw: Dict[str, Any]) -> Optional[int]:
 
 def parse_max_workers(raw: Dict[str, Any]) -> Optional[int]:
     return optional_int_field("max_workers", raw)
-
-
-def parse_logging(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if "logging" not in raw:
-        return None
-    return dict_field("logging", raw)
