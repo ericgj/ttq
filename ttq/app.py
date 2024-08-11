@@ -10,6 +10,9 @@ from .util.validate import dict_field
 App = Callable[[Context], Command]
 
 A = TypeVar("A")
+B = TypeVar("B")
+C = TypeVar("C")
+X = TypeVar("X")
 
 """
 Utilities for applications
@@ -61,3 +64,17 @@ def as_string(encoding: Optional[str], data: bytes) -> str:
 def as_json(encoding: Optional[str], data: bytes) -> Dict[str, Any]:
     """Decode as JSON dict"""
     return dict_field("_", {"_": json.loads(as_string(encoding, data))})
+
+
+def from_json(
+    decoder: Callable[[Dict[str, Any]], A],
+) -> Callable[[Optional[str], bytes], A]:
+    return compose(as_json, decoder)
+
+
+def compose(ab: Callable[[X, A], B], bc: Callable[[B], C]) -> Callable[[X, A], C]:
+    @wraps(compose)
+    def _inner(x: X, a: A) -> C:
+        return bc(ab(x, a))
+
+    return _inner
